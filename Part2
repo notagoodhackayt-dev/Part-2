@@ -4,4 +4,4 @@ if not isfile("RBundles.rbxmx") then
 writefile("RBundles.rbxmx", game:HttpGet("https://github.com/ian49972/RBXMSTWO/raw/refs/heads/main/RBundles.rbxmx"))
 end
 
-loadstring(game:HttpGet("https://raw.githubusercontent.com/notagoodhackayt-dev/Fix-unmoveable-script/refs/heads/main/Test1"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/notagoodhackayt-dev/Part-2/refs/heads/main/Part1"))()
