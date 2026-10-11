@@ -1,4 +1,5 @@
 -- Made by ban_thid and fixed up by notagoodhackayt
+-- Are you here to steal this?
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -447,62 +448,69 @@ shirtGraphic:SetAttribute("CatalogId",item.Id)
 updateWearing()
 AutoSaveOutfit()
 
-elseif item.AssetType == "Hat"
-    or (
-        typeof(item.AssetType) == "EnumItem"
-        and (
-            item.AssetType.Name == "Hat"
-            or string.find(item.AssetType.Name, "Accessory")
-        )
-    )
-    or (
-        type(item.AssetType) == "string"
-        and (
-            item.AssetType == "Hat"
-            or string.find(item.AssetType, "Accessory")
-        )
-    ) then
+elseif item.AssetType == "Hat" or string.find(item.AssetType, "Accessory") then
+	
+	local success,accessory = pcall(function()
+		return game:GetObjects("rbxassetid://"..item.Id)[1]
+	end)
 
-    local success, accessory = pcall(function()
-        local objects = game:GetObjects(
-            "rbxassetid://" .. tostring(item.Id)
-        )
-        return objects and objects[1]
-    end)
+	if success and accessory then
+		
+		accessory.Parent = character
+    accessory:SetAttribute("CatalogId",item.Id)
 
-    if not success or not accessory then
-        warn("Could not load accessory:", item.Name)
-        return
-    end
+   accessory:SetAttribute("DisplayName", item.Name)
 
-    if not accessory:IsA("Accessory") then
-        accessory:Destroy()
-        warn("Item is not a compatible Accessory:", item.Name)
-        return
-    end
+   updateWearing()
+   AutoSaveOutfit()
+		
+		local handle = accessory:FindFirstChild("Handle")
 
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if handle then
+			
+			local accessoryAttachment = handle:FindFirstChildWhichIsA("Attachment")
 
-    if not humanoid then
-        accessory:Destroy()
-        return
-    end
+			if accessoryAttachment then
+				
+				local characterAttachment = character:FindFirstChild(accessoryAttachment.Name, true)
 
-    accessory:SetAttribute("CatalogId", item.Id)
-    accessory:SetAttribute("DisplayName", item.Name)
+				if characterAttachment then
+					
+					handle.CFrame = characterAttachment.WorldCFrame 
+						* accessoryAttachment.CFrame:Inverse()
 
-    local equipped, err = pcall(function()
-        humanoid:AddAccessory(accessory)
-    end)
+					local weld = Instance.new("WeldConstraint")
+					weld.Part0 = handle
+					weld.Part1 = characterAttachment.Parent
+					weld.Parent = handle
+				
+	end
 
-    if not equipped then
-        accessory:Destroy()
-        warn("Could not equip accessory:", err)
-        return
-    end
+		else
 
-    updateWearing()
-    AutoSaveOutfit()
+			local head = character:FindFirstChild("Head")
+
+			if head then
+
+				handle.CFrame = head.CFrame
+
+				local weld = Instance.new("Weld")
+				weld.Part0 = handle
+				weld.Part1 = head
+				weld.Parent = handle
+
+			end
+		end
+
+		handle.Anchored = false
+		handle.CanCollide = false
+	end
+
+ updateWearing()
+ AutoSaveOutfit()
+
+end
+
 
 	elseif item.AssetType == Enum.AvatarAssetType.Face then
 
@@ -1473,13 +1481,7 @@ end
 
 		local params = CatalogSearchParams.new()
 		params.SearchKeyword = currentQuery
-		if currentAssetType == "Handheld" then
-    params.AssetTypes = {
-        Enum.AvatarAssetType.Gear,
-    }
-else
-    params.AssetTypes = {currentAssetType}
-end
+		params.AssetTypes = {currentAssetType}
 
 		catalogPages = AvatarEditorService:SearchCatalog(params)
 	else
@@ -1521,7 +1523,6 @@ addCategoryButton("Shoulder",Enum.AvatarAssetType.ShoulderAccessory)
 addCategoryButton("Front",Enum.AvatarAssetType.FrontAccessory)
 addCategoryButton("Back",Enum.AvatarAssetType.BackAccessory)
 addCategoryButton("Waist",Enum.AvatarAssetType.WaistAccessory)
-addCategoryButton("Handheld", "Handheld")
 addCategoryButton("Hat",Enum.AvatarAssetType.Hat)
 addCategoryButton("Bundles","Bundles")
 addCategoryButton("Body","Body")
