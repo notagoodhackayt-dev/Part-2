@@ -450,15 +450,24 @@ AutoSaveOutfit()
 elseif item.AssetType == "Hat"
     or (
         typeof(item.AssetType) == "EnumItem"
-        and string.find(item.AssetType.Name, "Accessory")
+        and (
+            item.AssetType.Name == "Hat"
+            or string.find(item.AssetType.Name, "Accessory")
+        )
     )
     or (
         type(item.AssetType) == "string"
-        and string.find(item.AssetType, "Accessory")
+        and (
+            item.AssetType == "Hat"
+            or string.find(item.AssetType, "Accessory")
+        )
     ) then
 
     local success, accessory = pcall(function()
-        return game:GetObjects("rbxassetid://" .. tostring(item.Id))[1]
+        local objects = game:GetObjects(
+            "rbxassetid://" .. tostring(item.Id)
+        )
+        return objects and objects[1]
     end)
 
     if not success or not accessory then
@@ -468,7 +477,7 @@ elseif item.AssetType == "Hat"
 
     if not accessory:IsA("Accessory") then
         accessory:Destroy()
-        warn("This item is not a compatible avatar accessory:", item.Name)
+        warn("Item is not a compatible Accessory:", item.Name)
         return
     end
 
@@ -1464,17 +1473,10 @@ end
 
 		local params = CatalogSearchParams.new()
 		params.SearchKeyword = currentQuery
-		local handheldTypes = {
-    Enum.AvatarAssetType.FrontAccessory,
-    Enum.AvatarAssetType.BackAccessory,
-    Enum.AvatarAssetType.ShoulderAccessory,
-    Enum.AvatarAssetType.WaistAccessory,
-    Enum.AvatarAssetType.NeckAccessory,
-    Enum.AvatarAssetType.Hat,
-}
-
-if currentAssetType == "Handheld" then
-    params.AssetTypes = handheldTypes
+		if currentAssetType == "Handheld" then
+    params.AssetTypes = {
+        Enum.AvatarAssetType.Gear,
+    }
 else
     params.AssetTypes = {currentAssetType}
 end
