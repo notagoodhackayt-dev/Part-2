@@ -70,7 +70,7 @@ local player = Players.LocalPlayer
 local previousGui = player:FindFirstChildOfClass("PlayerGui") and player.PlayerGui:FindFirstChild("Rob's Catalog Avatar Creator")
 if previousGui then previousGui:Destroy() end
 local gui = Instance.new("ScreenGui")
-gui.Name = "Rob's Catalog Avatar Creator"
+gui.Name = "PG🪐's Catalog Avatar Creator"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.Parent = player.PlayerGui
@@ -94,7 +94,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, 0, 0, 44)
 title.Position = UDim2.new(0, 0, 0, 0)
 title.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-title.Text = "Rob's Catalog Avatar Creator"
+title.Text = "PG🪐's Catalog Avatar Creator"
 title.Font = Enum.Font.GothamBold
 title.TextSize = 26
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
