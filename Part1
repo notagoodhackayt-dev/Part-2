@@ -1,13 +1,21 @@
 -- Made by ban_thid and fixed up by notagoodhackayt
 -- Are you here to steal this?
 
+local sharedEnv = (type(getgenv) == "function" and getgenv()) or _G
+sharedEnv.__RobCatalogRunGeneration = (sharedEnv.__RobCatalogRunGeneration or 0) + 1
+local thisRunGeneration = sharedEnv.__RobCatalogRunGeneration
+
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local AvatarEditorService = game:GetService("AvatarEditorService")
 local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
 
 local AutoSavedOutfit = nil
+local isRestoringOutfit = false
+local restoreGeneration = 0
+local animationSlots
 
 local SETTINGS_FILE = "RobCatalogSettings.json"
 local OUTFITS_FILE = "RobCatalogOutfits.json"
@@ -30,6 +38,22 @@ if isfile and isfile(OUTFITS_FILE) then
 	end)
 end
 
+local FAVORITES_FILE = "RobCatalogFavorites.json"
+local Favorites = {}
+if isfile and isfile(FAVORITES_FILE) then
+    pcall(function()
+        local decoded = HttpService:JSONDecode(readfile(FAVORITES_FILE))
+        if type(decoded) == "table" then Favorites = decoded end
+    end)
+end
+local function SaveFavorites()
+    if writefile then
+        pcall(function() writefile(FAVORITES_FILE, HttpService:JSONEncode(Favorites)) end)
+    end
+end
+local FAVORITE_ON_IMAGE = "rbxassetid://100050610003573"
+local FAVORITE_OFF_IMAGE = "rbxassetid://105601623680776"
+
 local function SaveSettings()
 	if writefile then
 		writefile(SETTINGS_FILE,HttpService:JSONEncode(Settings))
@@ -43,6 +67,8 @@ local function SaveOutfits()
 end
 
 local player = Players.LocalPlayer
+local previousGui = player:FindFirstChildOfClass("PlayerGui") and player.PlayerGui:FindFirstChild("Rob's Catalog Avatar Creator")
+if previousGui then previousGui:Destroy() end
 local gui = Instance.new("ScreenGui")
 gui.Name = "Rob's Catalog Avatar Creator"
 gui.ResetOnSpawn = false
@@ -58,6 +84,8 @@ frame.Active = true
 frame.Visible = true
 frame.Draggable = true
 frame.Parent = gui
+local DEFAULT_FRAME_SIZE = UDim2.new(0, 700, 0, 360)
+local SPECIAL_TAB_ACTIVE = false
 
 local corner = Instance.new("UICorner", frame)
 corner.CornerRadius = UDim.new(0, 8)
@@ -105,7 +133,7 @@ searchCorner.CornerRadius = UDim.new(0, 6)
 local clearSearchBtn = Instance.new("TextButton")
 clearSearchBtn.Text = "✖"
 clearSearchBtn.Size = UDim2.new(0, 30, 0, 30)
-clearSearchBtn.Position = UDim2.new(0.85, -30, 0, 50)
+clearSearchBtn.Position = UDim2.new(0.70, 4, 0, 50)
 clearSearchBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
 clearSearchBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 clearSearchBtn.Font = Enum.Font.GothamBold
@@ -120,9 +148,39 @@ scroll.Size = UDim2.new(0.72,0,1,-132)
 scroll.Position = UDim2.new(0.27,0,0,128)
 scroll.BackgroundTransparency = 1
 scroll.ScrollBarThickness = 6
+scroll.ScrollingDirection = Enum.ScrollingDirection.Y
 scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 scroll.Parent = frame
+
+local emptyState = Instance.new("Frame")
+emptyState.Name = "CatalogEmptyState"
+emptyState.BackgroundTransparency = 1
+emptyState.Size = UDim2.new(0, 220, 0, 180)
+emptyState.AnchorPoint = Vector2.new(0.5, 0.5)
+emptyState.Position = UDim2.new(0.64, 0, 0.64, 0)
+emptyState.Visible = false
+emptyState.ZIndex = 15
+emptyState.Parent = frame
+local emptyImage = Instance.new("ImageLabel")
+emptyImage.Size = UDim2.new(0, 100, 0, 100)
+emptyImage.Position = UDim2.new(0.5, -50, 0, 0)
+emptyImage.BackgroundTransparency = 1
+emptyImage.Image = "rbxassetid://2575890812"
+emptyImage.ScaleType = Enum.ScaleType.Fit
+emptyImage.ZIndex = 16
+emptyImage.Parent = emptyState
+local emptyText = Instance.new("TextLabel")
+emptyText.Size = UDim2.new(1, 0, 0, 50)
+emptyText.Position = UDim2.new(0, 0, 0, 108)
+emptyText.BackgroundTransparency = 1
+emptyText.Text = "Couldn't find accessory"
+emptyText.TextWrapped = true
+emptyText.TextColor3 = Color3.new(1, 1, 1)
+emptyText.Font = Enum.Font.GothamBold
+emptyText.TextSize = 16
+emptyText.ZIndex = 16
+emptyText.Parent = emptyState
 
 local wearingFrame = Instance.new("Frame")
 wearingFrame.Size = UDim2.new(0.24,0,1,-132)
@@ -130,6 +188,47 @@ wearingFrame.Position = UDim2.new(0.01,0,0,128)
 wearingFrame.BackgroundColor3 = Color3.fromRGB(35,35,35)
 wearingFrame.Parent = frame
 Instance.new("UICorner",wearingFrame)
+
+local currentAssetType
+
+local function isSearchableCatalogTab(assetType)
+    return assetType == "Anim Packs"
+        or (typeof(assetType) == "EnumItem" and assetType.EnumType == Enum.AvatarAssetType)
+end
+
+local function setSpecialTabLayout(enabled)
+    SPECIAL_TAB_ACTIVE = enabled
+    if scroll and scroll.Parent ~= frame then scroll.Parent = frame end
+    if scroll then
+        scroll.Visible = true
+        scroll.ScrollingEnabled = true
+        scroll.ScrollBarThickness = 6
+        scroll.ScrollingDirection = Enum.ScrollingDirection.Y
+    end
+    local searchableTab = isSearchableCatalogTab(currentAssetType)
+    searchBar.Visible = searchableTab
+    clearSearchBtn.Visible = searchableTab
+    searchBar.PlaceholderText = currentAssetType == "Anim Packs" and "Search animation packs..." or "Search catalog items..."
+    if enabled then
+        wearingFrame.Visible = false
+        scroll.Position = UDim2.new(0, 8, 0, 128)
+        scroll.Size = UDim2.new(1, -16, 1, -136)
+        scroll.AutomaticCanvasSize = Enum.AutomaticSize.None
+    else
+        frame.Size = DEFAULT_FRAME_SIZE
+        frame.Position = UDim2.new(0.5, -350, 0.5, -180)
+        searchBar.Visible = searchableTab
+        clearSearchBtn.Visible = searchableTab
+        searchBar.PlaceholderText = currentAssetType == "Anim Packs" and "Search animation packs..." or "Search catalog items..."
+        searchBar.Position = UDim2.new(0.15, 0, 0, 50)
+        searchBar.Size = UDim2.new(0.55, 0, 0, 30)
+        clearSearchBtn.Position = UDim2.new(0.70, 4, 0, 50)
+        wearingFrame.Visible = true
+        scroll.Position = UDim2.new(0.27, 0, 0, 128)
+        scroll.Size = UDim2.new(0.72, 0, 1, -132)
+        scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    end
+end
 
 local wearingTitle = Instance.new("TextLabel")
 wearingTitle.Size = UDim2.new(1,0,0,30)
@@ -248,14 +347,14 @@ rgbBox.Parent = bodyFrame
 Instance.new("UICorner",rgbBox)
 
 local catalogPages
+local animPackCardIds = {}
 local loadMore
 local AutoSaveOutfit
 local updateWearing
 local currentQuery = ""
-local currentAssetType = Enum.AvatarAssetType.Shirt
+local catalogAdvancedFilters = {includeOffSale = false, creatorName = "", sortType = "Relevance"}
+currentAssetType = Enum.AvatarAssetType.Shirt
 local loading = false
-
-local outfitNameBox = nil
 
 local BundlesContainer = game:GetObjects(getcustomasset("RBundles.rbxmx"))[1]
 
@@ -375,163 +474,154 @@ task.spawn(function()
 	end
 end)
 
-local function tryOn(item)
+local function tryOn(item, targetCharacter)
+    if sharedEnv.__RobCatalogRunGeneration ~= thisRunGeneration then return end
+	local character = targetCharacter or player.Character or player.CharacterAdded:Wait()
+	local typeName = tostring(item.AssetType):match("([^%.]+)$") or tostring(item.AssetType)
 
-	local character = player.Character or player.CharacterAdded:Wait()
-
-local function AlreadyEquipped()
-
-	for _,v in ipairs(character:GetChildren()) do
-    if v:GetAttribute("CatalogId") == item.Id then
-        return true
-    end
-end
+	for _, child in ipairs(character:GetChildren()) do
+		if child:GetAttribute("CatalogId") == item.Id then
+			return
+		end
+	end
 
 	local head = character:FindFirstChild("Head")
-
 	if head then
 		local mesh = head:FindFirstChildOfClass("SpecialMesh")
 		if mesh and mesh:GetAttribute("DisplayName") == item.Name then
-			return true
+			return
 		end
 	end
 
-	return false
-end
-
-if AlreadyEquipped() then
-	return
-end
-
-if item.AssetType == "Shirt" then
-
-	for _,v in ipairs(character:GetChildren()) do
-		if v:IsA("Shirt") then
-			v:Destroy()
-		end
-	end
-
-	local shirt = game:GetObjects("rbxassetid://"..item.Id)[1]
-shirt:SetAttribute("DisplayName", item.Name)
-shirt.Parent = character
-shirt:SetAttribute("CatalogId",item.Id)
-updateWearing()
-AutoSaveOutfit()
-
-elseif item.AssetType == "Pants" then
-
-	for _,v in ipairs(character:GetChildren()) do
-		if v:IsA("Pants") then
-			v:Destroy()
-		end
-	end
-
-	local pants = game:GetObjects("rbxassetid://"..item.Id)[1]
-pants:SetAttribute("DisplayName", item.Name)
-pants.Parent = character
-pants:SetAttribute("CatalogId",item.Id)
-updateWearing()
-AutoSaveOutfit()
-
-elseif item.AssetType == "TShirt" then
-
-	for _,v in ipairs(character:GetChildren()) do
-		if v:IsA("ShirtGraphic") then
-			v:Destroy()
-		end
-	end
-
-	local shirtGraphic = game:GetObjects("rbxassetid://"..item.Id)[1]
-shirtGraphic:SetAttribute("DisplayName", item.Name)
-shirtGraphic.Parent = character
-shirtGraphic:SetAttribute("CatalogId",item.Id)
-updateWearing()
-AutoSaveOutfit()
-
-elseif item.AssetType == "Hat" or string.find(item.AssetType, "Accessory") then
-	
-	local success,accessory = pcall(function()
-		return game:GetObjects("rbxassetid://"..item.Id)[1]
+	local ok, asset = pcall(function()
+		return game:GetObjects("rbxassetid://" .. tostring(item.Id))[1]
 	end)
-
-	if success and accessory then
-		
-		accessory.Parent = character
-    accessory:SetAttribute("CatalogId",item.Id)
-
-   accessory:SetAttribute("DisplayName", item.Name)
-
-   updateWearing()
-   AutoSaveOutfit()
-		
-		local handle = accessory:FindFirstChild("Handle")
-
-		if handle then
-			
-			local accessoryAttachment = handle:FindFirstChildWhichIsA("Attachment")
-
-			if accessoryAttachment then
-				
-				local characterAttachment = character:FindFirstChild(accessoryAttachment.Name, true)
-
-				if characterAttachment then
-					
-					handle.CFrame = characterAttachment.WorldCFrame 
-						* accessoryAttachment.CFrame:Inverse()
-
-					local weld = Instance.new("WeldConstraint")
-					weld.Part0 = handle
-					weld.Part1 = characterAttachment.Parent
-					weld.Parent = handle
-				
+	if not ok or not asset then return end
+    if sharedEnv.__RobCatalogRunGeneration ~= thisRunGeneration then asset:Destroy(); return end
+	if targetCharacter and (player.Character ~= character or not character.Parent) then
+		asset:Destroy()
+		return
 	end
 
-		else
-
-			local head = character:FindFirstChild("Head")
-
-			if head then
-
-				handle.CFrame = head.CFrame
-
-				local weld = Instance.new("Weld")
-				weld.Part0 = handle
-				weld.Part1 = head
-				weld.Parent = handle
-
-			end
+	local function replaceClass(className)
+		for _, child in ipairs(character:GetChildren()) do
+			if child:IsA(className) then child:Destroy() end
 		end
-
-		handle.Anchored = false
-		handle.CanCollide = false
 	end
 
- updateWearing()
- AutoSaveOutfit()
-
-end
-
-
-	elseif item.AssetType == Enum.AvatarAssetType.Face then
-
-		local head = character:FindFirstChild("Head")
-
+	if typeName == "Shirt" then
+		local shirt = asset:IsA("Shirt") and asset or asset:FindFirstChildWhichIsA("Shirt", true)
+		if shirt then
+			replaceClass("Shirt")
+			if shirt ~= asset then asset:Destroy() end
+			shirt:SetAttribute("DisplayName", item.Name)
+			shirt:SetAttribute("CatalogId", item.Id)
+			shirt.Parent = character
+		else
+			asset:Destroy()
+			return
+		end
+	elseif typeName == "Pants" then
+		local pants = asset:IsA("Pants") and asset or asset:FindFirstChildWhichIsA("Pants", true)
+		if pants then
+			replaceClass("Pants")
+			if pants ~= asset then asset:Destroy() end
+			pants:SetAttribute("DisplayName", item.Name)
+			pants:SetAttribute("CatalogId", item.Id)
+			pants.Parent = character
+		else
+			asset:Destroy()
+			return
+		end
+	elseif typeName == "TShirt" then
+		local graphic = asset:IsA("ShirtGraphic") and asset or asset:FindFirstChildWhichIsA("ShirtGraphic", true)
+		if graphic then
+			replaceClass("ShirtGraphic")
+			if graphic ~= asset then asset:Destroy() end
+			graphic:SetAttribute("DisplayName", item.Name)
+			graphic:SetAttribute("CatalogId", item.Id)
+			graphic.Parent = character
+		else
+			asset:Destroy()
+			return
+		end
+	elseif typeName == "Face" then
 		if head then
-			
-			local old = head:FindFirstChild("face")
-
-			if old then
-				old:Destroy()
-			end
-
+			local oldFace = head:FindFirstChild("face")
+			if oldFace then oldFace:Destroy() end
 			local decal = Instance.new("Decal")
 			decal.Name = "face"
-			decal.Texture = "rbxassetid://"..item.Id
+			decal.Texture = "rbxassetid://" .. tostring(item.Id)
+			decal:SetAttribute("CatalogId", item.Id)
+			decal:SetAttribute("DisplayName", item.Name)
 			decal.Parent = head
-			
+		end
+		asset:Destroy()
+	else
+		local accessory = asset:IsA("Accessory") and asset or asset:FindFirstChildWhichIsA("Accessory", true)
+		if not accessory then
+			asset:SetAttribute("CatalogId", item.Id)
+			asset:SetAttribute("DisplayName", item.Name)
+			asset.Parent = character
+			if updateWearing then updateWearing() end
+			if AutoSaveOutfit then AutoSaveOutfit() end
+			return
+		end
+		if accessory ~= asset then
+			accessory.Parent = nil
+			asset:Destroy()
 		end
 
+		accessory:SetAttribute("CatalogId", item.Id)
+		accessory:SetAttribute("DisplayName", item.Name)
+		accessory.Parent = character
+
+		local handle = accessory:FindFirstChild("Handle")
+		if handle and handle:IsA("BasePart") then
+			local accessoryAttachment = handle:FindFirstChildWhichIsA("Attachment")
+			local characterAttachment
+			if accessoryAttachment then
+				for _, descendant in ipairs(character:GetDescendants()) do
+					if descendant:IsA("Attachment")
+						and descendant.Name == accessoryAttachment.Name
+						and descendant ~= accessoryAttachment
+						and descendant.Parent and descendant.Parent:IsA("BasePart")
+						and descendant.Parent ~= handle then
+						characterAttachment = descendant
+						break
+					end
+				end
+			end
+
+			for _, child in ipairs(handle:GetChildren()) do
+				if child:IsA("Weld") or child:IsA("WeldConstraint") or child:IsA("Motor6D") then
+					child:Destroy()
+				end
+			end
+
+			if accessoryAttachment and characterAttachment and characterAttachment:IsA("Attachment") and characterAttachment.Parent:IsA("BasePart") then
+				handle.CFrame = characterAttachment.WorldCFrame * accessoryAttachment.CFrame:Inverse()
+				local weld = Instance.new("WeldConstraint")
+				weld.Part0 = handle
+				weld.Part1 = characterAttachment.Parent
+				weld.Parent = handle
+		else
+				local fallbackHead = character:FindFirstChild("Head")
+				if fallbackHead then
+					handle.CFrame = fallbackHead.CFrame
+					local weld = Instance.new("WeldConstraint")
+					weld.Part0 = handle
+					weld.Part1 = fallbackHead
+					weld.Parent = handle
+				end
+			end
+			handle.Anchored = false
+			handle.CanCollide = false
+		end
 	end
+
+	if updateWearing then updateWearing() end
+	if AutoSaveOutfit then AutoSaveOutfit() end
 end
 
 local function equipBundleMesh(mesh)
@@ -705,6 +795,36 @@ end
 
 end
 
+local function getOriginalAvatarItemKey(item)
+	if not item or item:GetAttribute("CatalogId") ~= nil or item:GetAttribute("CatalogManaged") == true then
+		return nil
+	end
+	if item:IsA("Accessory") then
+		local handle = item:FindFirstChild("Handle")
+		local meshId, textureId = "", ""
+		if handle then
+			local mesh = handle:FindFirstChildOfClass("SpecialMesh")
+			if mesh then meshId, textureId = mesh.MeshId, mesh.TextureId end
+			local meshPart = handle:FindFirstChildOfClass("MeshPart")
+			if meshPart then meshId, textureId = meshPart.MeshId, meshPart.TextureID end
+		end
+		local accessoryType = ""
+		pcall(function() accessoryType = tostring(item.AccessoryType) end)
+		return table.concat({"Accessory", item.Name, accessoryType, meshId, textureId}, "|")
+	elseif item:IsA("Shirt") then
+		return "Shirt|" .. tostring(item.ShirtTemplate)
+	elseif item:IsA("Pants") then
+		return "Pants|" .. tostring(item.PantsTemplate)
+	elseif item:IsA("ShirtGraphic") then
+		return "ShirtGraphic|" .. tostring(item.Graphic)
+	elseif item:IsA("CharacterMesh") then
+		local bodyPart = ""
+		pcall(function() bodyPart = tostring(item.BodyPart) end)
+		return table.concat({"CharacterMesh", item.Name, bodyPart, tostring(item.MeshId), tostring(item.BaseTextureId), tostring(item.OverlayTextureId)}, "|")
+	end
+	return nil
+end
+
 local function GetCurrentOutfit()
 
 	local character = player.Character
@@ -716,17 +836,19 @@ local function GetCurrentOutfit()
 		Accessories = {},
 		Clothes = {},
 		Meshes = {},
-		BodyColors = {}
+		BodyColors = {},
+        OriginalAvatarItems = {}
 	}
 
 	for _,v in ipairs(character:GetChildren()) do
+        local originalKey = getOriginalAvatarItemKey(v)
+        if originalKey then table.insert(data.OriginalAvatarItems, originalKey) end
 
 		if v:IsA("Accessory") then
-
-			table.insert(data.Accessories,{
-				Id = tonumber(v:GetAttribute("CatalogId")),
-				Name = v:GetAttribute("DisplayName")
-			})
+            table.insert(data.Accessories, {
+                Id = tonumber(v:GetAttribute("CatalogId")),
+                Name = v:GetAttribute("DisplayName")
+            })
 
 		elseif v:IsA("Shirt") then
 
@@ -784,29 +906,55 @@ local function GetCurrentOutfit()
 		end
 	end
 
+
 	return data
 
 end
 
 AutoSaveOutfit = function()
-	if Settings.AutoLoad then
+    if sharedEnv.__RobCatalogRunGeneration ~= thisRunGeneration then return end
+	if Settings.AutoLoad and not isRestoringOutfit then
 		AutoSavedOutfit = GetCurrentOutfit()
 	end
 end
 
 local function LoadSavedOutfit(data)
+    if sharedEnv.__RobCatalogRunGeneration ~= thisRunGeneration then return end
+    if type(data) ~= "table" then return end
+    restoreGeneration += 1
+    local thisRestoreGeneration = restoreGeneration
+    data.Accessories = data.Accessories or {}
+    data.Clothes = data.Clothes or {}
+    data.Meshes = data.Meshes or {}
 
 	local character = player.Character or player.CharacterAdded:Wait()
+    isRestoringOutfit = true
 
 for _,v in ipairs(character:GetChildren()) do
-	if v:IsA("Accessory")
-	or v:IsA("Shirt")
-	or v:IsA("Pants")
-	or v:IsA("ShirtGraphic")
-	or v:IsA("CharacterMesh") then
-		v:Destroy()
-	end
+    if (v:IsA("Accessory") or v:IsA("Shirt") or v:IsA("Pants") or v:IsA("ShirtGraphic") or v:IsA("CharacterMesh"))
+        and (v:GetAttribute("CatalogId") ~= nil or v:GetAttribute("CatalogManaged") == true) then
+        v:Destroy()
+    end
 end
+
+    if type(data.OriginalAvatarItems) == "table" then
+        local desiredCounts = {}
+        for _, key in ipairs(data.OriginalAvatarItems) do desiredCounts[key] = (desiredCounts[key] or 0) + 1 end
+        for _, item in ipairs(character:GetChildren()) do
+            if item:IsA("Accessory") or item:IsA("Shirt") or item:IsA("Pants") or item:IsA("ShirtGraphic") or item:IsA("CharacterMesh") then
+                if item:GetAttribute("CatalogId") == nil and item:GetAttribute("CatalogManaged") ~= true then
+                    local key = getOriginalAvatarItemKey(item)
+                    if key then
+                        if (desiredCounts[key] or 0) > 0 then
+                            desiredCounts[key] -= 1
+                        else
+                            item:Destroy()
+                        end
+                    end
+                end
+            end
+        end
+    end
 
 local head = character:FindFirstChild("Head")
 if head then
@@ -821,38 +969,54 @@ if head then
 end
 
 	if data.Clothes.Shirt then
+        if sharedEnv.__RobCatalogRunGeneration ~= thisRunGeneration or thisRestoreGeneration ~= restoreGeneration or player.Character ~= character then
+            if thisRestoreGeneration == restoreGeneration then isRestoringOutfit = false end
+            return
+        end
 		tryOn({
 			Id = data.Clothes.Shirt,
 			Name = "Shirt",
 			AssetType = "Shirt"
-		})
+		}, character)
 	end
 
 	if data.Clothes.Pants then
+        if sharedEnv.__RobCatalogRunGeneration ~= thisRunGeneration or thisRestoreGeneration ~= restoreGeneration or player.Character ~= character then
+            if thisRestoreGeneration == restoreGeneration then isRestoringOutfit = false end
+            return
+        end
 		tryOn({
 			Id = data.Clothes.Pants,
 			Name = "Pants",
 			AssetType = "Pants"
-		})
+		}, character)
 	end
 
 	if data.Clothes.TShirt then
+        if sharedEnv.__RobCatalogRunGeneration ~= thisRunGeneration or thisRestoreGeneration ~= restoreGeneration or player.Character ~= character then
+            if thisRestoreGeneration == restoreGeneration then isRestoringOutfit = false end
+            return
+        end
 		tryOn({
 			Id = data.Clothes.TShirt,
 			Name = "T-Shirt",
 			AssetType = "TShirt"
-		})
+		}, character)
 	end
 
 	for _,acc in ipairs(data.Accessories) do
-		if acc.Id then
-			tryOn({
-				Id = acc.Id,
-				Name = acc.Name,
-				AssetType = "Hat"
-			})
-		end
-	end
+        if sharedEnv.__RobCatalogRunGeneration ~= thisRunGeneration or thisRestoreGeneration ~= restoreGeneration or player.Character ~= character then
+            isRestoringOutfit = false
+            return
+        end
+        if acc.Id then
+            tryOn({
+                Id = acc.Id,
+                Name = acc.Name,
+                AssetType = "Hat"
+            }, character)
+        end
+    end
 
 	if data.BodyColors then
 		for partName,color in pairs(data.BodyColors) do
@@ -904,8 +1068,12 @@ end
 	end
 end
 
-updateWearing()
-AutoSaveOutfit()
+
+if sharedEnv.__RobCatalogRunGeneration == thisRunGeneration and thisRestoreGeneration == restoreGeneration then
+    isRestoringOutfit = false
+    updateWearing()
+    AutoSaveOutfit()
+end
 
 end
 
@@ -941,7 +1109,128 @@ local function openBundle(folder)
 
 end
 
+local function attachAccessoryToPreview(character, accessory)
+	local handle = accessory:FindFirstChild("Handle")
+	if not handle or not handle:IsA("BasePart") then
+		accessory:Destroy()
+		return false
+	end
+
+	handle.Anchored = true
+	handle.CanCollide = false
+	accessory.Parent = character
+
+	local accessoryAttachment
+	for _, d in ipairs(handle:GetDescendants()) do
+		if d:IsA("Attachment") then accessoryAttachment = d; break end
+	end
+	if accessoryAttachment then
+		local bodyPart, bodyAttachment
+		for _, d in ipairs(character:GetDescendants()) do
+			if d:IsA("Attachment") and d.Name == accessoryAttachment.Name
+				and d.Parent and d.Parent:IsA("BasePart") and d.Parent ~= handle then
+				bodyPart, bodyAttachment = d.Parent, d
+				break
+			end
+		end
+		if bodyPart and bodyAttachment then
+			for _, d in ipairs(handle:GetChildren()) do
+				if d:IsA("Weld") or d:IsA("WeldConstraint") or d:IsA("Motor6D") then d:Destroy() end
+			end
+			handle.CFrame = bodyPart.CFrame * bodyAttachment.CFrame * accessoryAttachment.CFrame:Inverse()
+			local weld = Instance.new("Weld")
+			weld.Name = "PreviewAccessoryWeld"
+			weld.Part0 = bodyPart
+			weld.Part1 = handle
+			weld.C0 = bodyAttachment.CFrame
+			weld.C1 = accessoryAttachment.CFrame
+			weld.Parent = handle
+			return true, bodyPart, bodyAttachment, accessoryAttachment, weld
+		end
+	end
+
+	local head = character:FindFirstChild("Head")
+	if head then
+		handle.CFrame = head.CFrame
+		local weld = Instance.new("Weld")
+		weld.Name = "PreviewAccessoryWeld"
+		weld.Part0 = head
+		weld.Part1 = handle
+		weld.C0 = CFrame.new()
+		weld.C1 = CFrame.new()
+		weld.Parent = handle
+		return true, head, nil, nil, weld
+	end
+	return false
+end
+
+local function applyItemToPreview(previewCharacter, item)
+	local ok, asset = pcall(function()
+		return game:GetObjects("rbxassetid://" .. tostring(item.Id))[1]
+	end)
+	if not ok or not asset then return end
+
+	local humanoid = previewCharacter:FindFirstChildOfClass("Humanoid")
+	if asset:IsA("Accessory") then
+		attachAccessoryToPreview(previewCharacter, asset)
+	elseif asset:IsA("Shirt") then
+		local old = previewCharacter:FindFirstChildOfClass("Shirt")
+		if old then old:Destroy() end
+		asset.Parent = previewCharacter
+	elseif asset:IsA("Pants") then
+		local old = previewCharacter:FindFirstChildOfClass("Pants")
+		if old then old:Destroy() end
+		asset.Parent = previewCharacter
+	elseif asset:IsA("ShirtGraphic") then
+		local old = previewCharacter:FindFirstChildOfClass("ShirtGraphic")
+		if old then old:Destroy() end
+		asset.Parent = previewCharacter
+	elseif asset:IsA("Model") then
+		local accessory = asset:FindFirstChildWhichIsA("Accessory", true)
+		if accessory and humanoid then
+			accessory.Parent = nil
+			asset:Destroy()
+			attachAccessoryToPreview(previewCharacter, accessory)
+		else
+			asset.Parent = previewCharacter
+		end
+	else
+		asset.Parent = previewCharacter
+	end
+end
+
+local function favoriteKey(item)
+    return tostring(item and (item.Id or item.id) or "")
+end
+
+local function isFavorited(item)
+    local key = favoriteKey(item)
+    return key ~= "" and Favorites[key] ~= nil
+end
+
+local function refreshFavoritesTab()
+    if currentAssetType == "Favorites" and loadMore and not loading then
+        loadMore(true)
+    end
+end
+
+local function toggleFavorite(item)
+    local key = favoriteKey(item)
+    if key == "" then return end
+    if Favorites[key] then
+        Favorites[key] = nil
+    else
+        local rawAssetType = item.AssetType or currentAssetType
+        local assetTypeName = tostring(rawAssetType):match("([^%.]+)$") or tostring(rawAssetType or "")
+        Favorites[key] = {Id = tonumber(key) or key, Name = tostring(item.Name or ("Asset " .. key)), AssetType = assetTypeName}
+    end
+    SaveFavorites()
+    refreshFavoritesTab()
+end
+
+local activeCatalogPreviewClear = nil
 local function addItem(item)
+	local previewSequence = 0
 	local button = Instance.new("ImageButton")
 	button.Size = UDim2.new(0,100,0,120)
 	button.BackgroundColor3 = Color3.fromRGB(45,45,45)
@@ -950,10 +1239,12 @@ local function addItem(item)
 	imgCorner.CornerRadius = UDim.new(0,8)
 
 	local image = Instance.new("ImageLabel")
+	image.Name = "CatalogThumbnail"
 	image.Size = UDim2.new(1,-10,0,90)
 	image.Position = UDim2.new(0,5,0,5)
 	image.BackgroundTransparency = 1
-  image.Image = "rbxthumb://type=Asset&id="..item.Id.."&w=150&h=150"
+	image.Image = "rbxthumb://type=Asset&id="..item.Id.."&w=150&h=150"
+	image.ScaleType = Enum.ScaleType.Fit
 	image.Parent = button
 	local imageCorner = Instance.new("UICorner", image)
 	imageCorner.CornerRadius = UDim.new(0,8)
@@ -970,51 +1261,235 @@ local function addItem(item)
 	local textCorner = Instance.new("UICorner", text)
 	textCorner.CornerRadius = UDim.new(0,6)
 
-	button.MouseButton1Click:Connect(function()
+    local favoriteButton = Instance.new("ImageButton")
+    favoriteButton.Name = "FavoriteButton"
+    favoriteButton.Size = UDim2.new(0,22,0,22)
+    favoriteButton.Position = UDim2.new(1,-26,0,4)
+    favoriteButton.BackgroundTransparency = 1
+    favoriteButton.Image = isFavorited(item) and FAVORITE_ON_IMAGE or FAVORITE_OFF_IMAGE
+    favoriteButton.ScaleType = Enum.ScaleType.Fit
+    favoriteButton.ZIndex = 5
+    favoriteButton.Parent = button
+    favoriteButton.MouseButton1Click:Connect(function()
+        toggleFavorite(item)
+        if favoriteButton.Parent then
+            favoriteButton.Image = isFavorited(item) and FAVORITE_ON_IMAGE or FAVORITE_OFF_IMAGE
+        end
+    end)
 
-	local tryBtn = Instance.new("TextButton")
-	tryBtn.Size = UDim2.new(1,0,0,25)
-	tryBtn.Position = UDim2.new(0,0,0,95)
-	tryBtn.BackgroundColor3 = Color3.fromRGB(0,170,255)
-	tryBtn.TextColor3 = Color3.new(1,1,1)
-	tryBtn.Font = Enum.Font.GothamBold
-	tryBtn.TextSize = 14
-	tryBtn.Text = "Try On"
-	tryBtn.Parent = button
+	local activeViewport
+	local activeWorld
+	local activeCamera
+	local rotationConnection
+	local tryBtn
 
-	Instance.new("UICorner",tryBtn).CornerRadius = UDim.new(0,6)
-
-task.delay(5,function()
-	if tryBtn then
-		tryBtn:Destroy()
+	local function clearCardPreview()
+		if rotationConnection then rotationConnection:Disconnect(); rotationConnection = nil end
+		if activeViewport then activeViewport:Destroy(); activeViewport = nil end
+		if activeWorld then activeWorld:Destroy(); activeWorld = nil end
+		if activeCamera then activeCamera:Destroy(); activeCamera = nil end
+		image.Visible = true
+		if tryBtn then tryBtn:Destroy(); tryBtn = nil end
 	end
-end)
 
-	tryBtn.MouseButton1Click:Connect(function()
-		tryOn(item)
+	local function clearActivePreview()
+        previewSequence += 1
+        clearCardPreview()
+    end
+
+	local function showCardPreview(sequence)
+		if sequence ~= previewSequence or not button.Parent then return end
+		activeViewport = Instance.new("ViewportFrame")
+		activeViewport.Name = "ItemAvatarPreview"
+		activeViewport.Size = UDim2.new(1,-10,0,90)
+		activeViewport.Position = UDim2.new(0,5,0,5)
+		activeViewport.BackgroundTransparency = 1
+		activeViewport.Ambient = Color3.fromRGB(200,200,200)
+		activeViewport.LightColor = Color3.fromRGB(255,255,255)
+		activeViewport.Parent = button
+		image.Visible = false
+
+		activeWorld = Instance.new("WorldModel")
+		activeWorld.Parent = activeViewport
+		activeCamera = Instance.new("Camera")
+		activeCamera.FieldOfView = 35
+		activeCamera.Parent = activeViewport
+		activeViewport.CurrentCamera = activeCamera
+
+		local character = player.Character
+		if not character then
+			character = player.CharacterAdded:Wait()
+		end
+		if sequence ~= previewSequence or not button.Parent then return end
+		local wasArchivable = character.Archivable
+		character.Archivable = true
+		local clone = character:Clone()
+		character.Archivable = wasArchivable
+		if not clone then return end
+		for _, descendant in ipairs(clone:GetDescendants()) do
+			if descendant:IsA("Script") or descendant:IsA("LocalScript") or descendant:IsA("Animator") then
+				descendant:Destroy()
+			elseif descendant:IsA("BasePart") then
+				descendant.Anchored = true
+				descendant.CanCollide = false
+				descendant.LocalTransparencyModifier = 0
+			end
+		end
+		local humanoid = clone:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+			humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+		end
+		clone.Parent = activeWorld
+		local root = clone:FindFirstChild("HumanoidRootPart")
+		clone:PivotTo(CFrame.new(0, 0, 0) * CFrame.Angles(0, math.rad(180), 0))
+		local boxCFrame, boxSize = clone:GetBoundingBox()
+		clone:PivotTo(CFrame.new(-boxCFrame.Position) * clone:GetPivot())
+		applyItemToPreview(clone, item)
+
+		boxCFrame, boxSize = clone:GetBoundingBox()
+		clone:PivotTo(CFrame.new(-boxCFrame.Position) * clone:GetPivot())
+		boxCFrame, boxSize = clone:GetBoundingBox()
+		local focus = Vector3.new(0, boxSize.Y * 0.03, 0)
+		local viewportHeight = math.max(activeViewport.AbsoluteSize.Y, 90)
+		local viewportWidth = math.max(activeViewport.AbsoluteSize.X, 90)
+		local aspect = viewportWidth / viewportHeight
+		local verticalFov = math.rad(activeCamera.FieldOfView)
+		local horizontalFov = 2 * math.atan(math.tan(verticalFov / 2) * aspect)
+		local distanceForHeight = (boxSize.Y * 0.62) / math.tan(verticalFov / 2)
+		local distanceForWidth = (boxSize.X * 0.62) / math.tan(horizontalFov / 2)
+		local distance = math.max(distanceForHeight, distanceForWidth, boxSize.Z * 1.5, 3.5)
+		activeCamera.CFrame = CFrame.lookAt(focus + Vector3.new(0, boxSize.Y * 0.015, -distance), focus)
+
+		local basePivot = clone:GetPivot()
+		local angle = 0
+		rotationConnection = RunService.RenderStepped:Connect(function(dt)
+			if sequence ~= previewSequence or not clone.Parent or not activeViewport or not activeViewport.Parent then
+				if rotationConnection then rotationConnection:Disconnect(); rotationConnection = nil end
+				return
+			end
+			angle += dt * 0.7
+			clone:PivotTo(CFrame.new(focus) * CFrame.Angles(0, angle, 0) * CFrame.new(-focus) * basePivot)
+		end)
+	end
+
+	button.MouseButton1Click:Connect(function()
+        if activeCatalogPreviewClear then activeCatalogPreviewClear() end
+		previewSequence += 1
+		local mySequence = previewSequence
+		clearCardPreview()
+        activeCatalogPreviewClear = clearActivePreview
+
+		tryBtn = Instance.new("TextButton")
+		tryBtn.Size = UDim2.new(1,0,0,25)
+		tryBtn.Position = UDim2.new(0,0,0,95)
+		tryBtn.BackgroundColor3 = Color3.fromRGB(0,170,255)
+		tryBtn.TextColor3 = Color3.new(1,1,1)
+		tryBtn.Font = Enum.Font.GothamBold
+		tryBtn.TextSize = 14
+		tryBtn.Text = "Try On"
+		tryBtn.Parent = button
+		Instance.new("UICorner",tryBtn).CornerRadius = UDim.new(0,6)
+
+		tryBtn.MouseButton1Click:Connect(function()
+			tryOn(item)
+		end)
+
+		task.spawn(showCardPreview, mySequence)
+		task.delay(5,function()
+			if mySequence == previewSequence and button.Parent then
+				clearCardPreview()
+                if activeCatalogPreviewClear == clearActivePreview then activeCatalogPreviewClear = nil end
+			end
+		end)
 	end)
+end
 
-end)
+local function clearCategoryButtons()
+	for _, child in ipairs(categoryScroll:GetChildren()) do
+		if child:IsA("TextButton") then child:Destroy() end
+	end
+end
 
- end
+local animPackButtons = {}
+local animPacksIsR15 = false
 
-local function addCategoryButton(text, assetType)
+local function addCategoryButton(text, assetType, width)
 	local button = Instance.new("TextButton")
-	button.Size = UDim2.new(0,90,1,0)
+	button.Size = UDim2.new(0,width or 90,1,0)
 	button.BackgroundColor3 = Color3.fromRGB(45,45,45)
 	button.TextColor3 = Color3.new(1,1,1)
 	button.Font = Enum.Font.GothamBold
 	button.TextSize = 14
 	button.Text = text
 	button.Parent = categoryScroll
-
 	Instance.new("UICorner", button).CornerRadius = UDim.new(0,6)
+	if assetType == "Anim Packs" then
+		table.insert(animPackButtons, button)
+		button.Text = animPacksIsR15 and "Anim Packs" or "Anim Packs ⚠"
+		button.BackgroundColor3 = animPacksIsR15 and Color3.fromRGB(45,45,45) or Color3.fromRGB(75,55,45)
+	end
 
 	button.MouseButton1Click:Connect(function()
-		currentAssetType = assetType
-		loadMore(true)
+		if assetType == "Anim Packs" then
+			currentAssetType = "Anim Packs"
+			loadMore(true)
+		elseif type(assetType) == "table" and assetType._group then
+			clearCategoryButtons()
+			addCategoryButton("‹ Back", {_back = true}, 75)
+			for _, category in ipairs(assetType.items) do
+				addCategoryButton(category[1], category[2], category[3] or 90)
+			end
+		elseif type(assetType) == "table" and assetType._back then
+			clearCategoryButtons()
+			addCategoryButton("Accessories", {_group = true, items = {
+				{"Hats", Enum.AvatarAssetType.Hat}, {"Hair", Enum.AvatarAssetType.HairAccessory},
+				{"Face", Enum.AvatarAssetType.FaceAccessory}, {"Neck", Enum.AvatarAssetType.NeckAccessory},
+				{"Shoulder", Enum.AvatarAssetType.ShoulderAccessory}, {"Front", Enum.AvatarAssetType.FrontAccessory},
+				{"Back", Enum.AvatarAssetType.BackAccessory}, {"Waist", Enum.AvatarAssetType.WaistAccessory}
+			}}, 105)
+			addCategoryButton("Clothing", {_group = true, items = {
+				{"Shirts", Enum.AvatarAssetType.Shirt}, {"Pants", Enum.AvatarAssetType.Pants},
+				{"T-Shirts", Enum.AvatarAssetType.TShirt}
+			}}, 100)
+			addCategoryButton("Bundles", "Bundles", 85)
+			addCategoryButton("Body", "Body", 70)
+			addCategoryButton("Outfits", "Outfits", 85)
+            addCategoryButton("Favorites", "Favorites", 90)
+			addCategoryButton("Settings", "Settings", 85)
+            addCategoryButton("Music Player", "Music Player", 112)
+            addCategoryButton("Accessory Studio", "Accessory Studio", 125)
+            addCategoryButton("Anim Packs", "Anim Packs", 100)
+		else
+			currentAssetType = assetType
+			loadMore(true)
+		end
 	end)
 end
+
+local function buildMainCategories()
+	clearCategoryButtons()
+	addCategoryButton("Accessories", {_group = true, items = {
+		{"Hats", Enum.AvatarAssetType.Hat}, {"Hair", Enum.AvatarAssetType.HairAccessory},
+		{"Face", Enum.AvatarAssetType.FaceAccessory}, {"Neck", Enum.AvatarAssetType.NeckAccessory},
+		{"Shoulder", Enum.AvatarAssetType.ShoulderAccessory}, {"Front", Enum.AvatarAssetType.FrontAccessory},
+		{"Back", Enum.AvatarAssetType.BackAccessory}, {"Waist", Enum.AvatarAssetType.WaistAccessory}
+	}}, 105)
+	addCategoryButton("Clothing", {_group = true, items = {
+		{"Shirts", Enum.AvatarAssetType.Shirt}, {"Pants", Enum.AvatarAssetType.Pants},
+		{"T-Shirts", Enum.AvatarAssetType.TShirt}
+	}}, 100)
+	addCategoryButton("Bundles", "Bundles", 85)
+	addCategoryButton("Body", "Body", 70)
+	addCategoryButton("Outfits", "Outfits", 85)
+	addCategoryButton("Favorites", "Favorites", 90)
+	addCategoryButton("Settings", "Settings", 85)
+            addCategoryButton("Music Player", "Music Player", 112)
+            addCategoryButton("Accessory Studio", "Accessory Studio", 125)
+            addCategoryButton("Anim Packs", "Anim Packs", 100)
+end
+
+local function searchableTabForEmptyState() return currentAssetType == "Accessories" or currentAssetType == "Clothing" or currentAssetType == "Anim Packs" end
 
 local function updateSearch()
 	scroll.CanvasSize = UDim2.new(0,0,0,0)
@@ -1022,19 +1497,23 @@ local function updateSearch()
 		scroll.CanvasSize = UDim2.new(0,0,0,layout.AbsoluteContentSize.Y)
 	end)
 
+    local visibleCards = 0
 	for _, child in ipairs(scroll:GetChildren()) do
 		if child:IsA("ImageButton") then
 			local name = child:FindFirstChild("name") or child:FindFirstChild("TextLabel")
 			local matches = true
-			if name and name.Text:lower():find(searchBar.Text:lower()) == nil then
-				matches = false
-			end
+			if name and name.Text:lower():find(searchBar.Text:lower(), 1, true) == nil then matches = false end
 			child.Visible = matches
+            if matches then visibleCards += 1 end
 		end
 	end
+    emptyState.Visible = searchableTabForEmptyState and searchableTabForEmptyState() and visibleCards == 0 and not loading
+    emptyText.Text = currentAssetType == "Anim Packs" and "Couldn't find animation pack" or "Couldn't find accessory or clothing"
 end
 
 local function clearItems()
+    emptyState.Visible = false
+    if activeCatalogPreviewClear then activeCatalogPreviewClear(); activeCatalogPreviewClear = nil end
 	for _,v in ipairs(scroll:GetChildren()) do
 		if v:IsA("GuiObject") and not v:IsA("UIGridLayout") then
 			v:Destroy()
@@ -1070,6 +1549,8 @@ partSelector.Visible = false
 
 local index = 1
 
+local accessoryStudioProfiles = setmetatable({}, {__mode = "k"})
+
 partSelector.MouseButton1Click:Connect(function()
 	index += 1
 	if index > #Parts then
@@ -1080,6 +1561,325 @@ partSelector.MouseButton1Click:Connect(function()
 	partSelector.Text = Parts[index]
 end)
 
+local AssetService = game:GetService("AssetService")
+animationSlots = {
+    {key="idle", label="Idle", assetType=51, folder="idle"},
+    {key="walk", label="Walk", assetType=55, folder="walk"},
+    {key="run", label="Run", assetType=53, folder="run"},
+    {key="jump", label="Jump", assetType=52, folder="jump"},
+    {key="fall", label="Fall", assetType=50, folder="fall"},
+    {key="climb", label="Climb", assetType=48, folder="climb"},
+    {key="swim", label="Swim", assetType=54, folder="swim"},
+}
+local function getAnimationSlot(item)
+    local t = item and item.AssetType
+    if type(t) == "table" then t = t.Id or t.id or t.Name end
+    local n = tonumber(t)
+    if not n and item and item.Type == "Asset" then n = tonumber(item.AssetTypeId) end
+    if n then
+        for _, slot in ipairs(animationSlots) do if slot.assetType == n then return slot end end
+    end
+    local name = string.lower(tostring((item and item.Name) or t or ""))
+    for _, slot in ipairs(animationSlots) do if name:find(slot.label:lower(), 1, true) then return slot end end
+    return nil
+end
+
+local animationModal, animationModalWorld, animationModalRig, animationModalAnimator
+local animationModalTrack
+local activeAnimationBundle, activeAnimationItems = nil, {}
+local function stopAnimationPreview()
+    if animationModalTrack then pcall(function() animationModalTrack:Stop(0.1) end); animationModalTrack = nil end
+end
+local function destroyAnimationModal()
+    stopAnimationPreview()
+    if animationModal then animationModal:Destroy(); animationModal = nil end
+    animationModalWorld, animationModalRig, animationModalAnimator = nil, nil, nil
+end
+local function animationAssetId(item)
+    return tostring(item and (item.Id or item.id) or "")
+end
+
+local function resolveAnimationClips(item, slot)
+    local clips = {}
+    local assetId = animationAssetId(item)
+    if not assetId:match("^%d+$") then return clips end
+    local propertyByKey = {
+        idle = "IdleAnimation", walk = "WalkAnimation", run = "RunAnimation",
+        jump = "JumpAnimation", fall = "FallAnimation", climb = "ClimbAnimation", swim = "SwimAnimation",
+    }
+    local prop = propertyByKey[slot.key]
+    if prop then
+        pcall(function()
+            local description = Instance.new("HumanoidDescription")
+            description[prop] = tonumber(assetId)
+            local dummy = game:GetService("Players"):CreateHumanoidModelFromDescription(description, Enum.HumanoidRigType.R15)
+            local animate = dummy:FindFirstChild("Animate")
+            local folderNames = {slot.folder}
+            if slot.key == "swim" then folderNames = {"swim", "swimidle"} end
+            if animate then
+                for _, folderName in ipairs(folderNames) do
+                    local folder = animate:FindFirstChild(folderName)
+                    if folder then
+                        for _, child in ipairs(folder:GetChildren()) do
+                            if child:IsA("Animation") and child.AnimationId ~= "" then
+                                clips[#clips+1] = {Name=child.Name, AnimationId=child.AnimationId}
+                            end
+                        end
+                    end
+                end
+            end
+            dummy:Destroy()
+        end)
+    end
+    if #clips == 0 then
+        pcall(function()
+            local objects = game:GetObjects("rbxassetid://" .. assetId)
+            for _, object in ipairs(objects or {}) do
+                if object:IsA("Animation") and object.AnimationId ~= "" then
+                    clips[#clips+1] = {Name=object.Name, AnimationId=object.AnimationId}
+                end
+                for _, child in ipairs(object:GetDescendants()) do
+                    if child:IsA("Animation") and child.AnimationId ~= "" then
+                        clips[#clips+1] = {Name=child.Name, AnimationId=child.AnimationId}
+                    end
+                end
+                object:Destroy()
+            end
+        end)
+    end
+    return clips
+end
+
+local function applyAnimationSlots(slotMap)
+    local char = player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not char or not hum or hum.RigType ~= Enum.HumanoidRigType.R15 then return false, "R15 is required" end
+    local animate = char:FindFirstChild("Animate") or char:WaitForChild("Animate", 4)
+    if not animate then return false, "Animate script was not found" end
+    for _, track in ipairs(hum:GetPlayingAnimationTracks()) do pcall(function() track:AdjustWeight(0, 0); track:Stop(0) end) end
+    animate.Disabled = true
+    for key, item in pairs(slotMap) do
+        local slot
+        for _, candidate in ipairs(animationSlots) do if candidate.key == key then slot = candidate; break end end
+        local folders = {}
+        if slot then
+            local primary = animate:FindFirstChild(slot.folder)
+            if primary then folders[#folders+1] = primary end
+            if key == "swim" then
+                local swimIdle = animate:FindFirstChild("swimidle")
+                if swimIdle then folders[#folders+1] = swimIdle end
+            end
+        end
+        local clips = item.ResolvedAnimations or {}
+        if #clips == 0 then
+            local fallbackId = animationAssetId(item)
+            if fallbackId:match("^%d+$") then clips = {{Name="Animation1", AnimationId="rbxassetid://" .. fallbackId}} end
+        end
+        if #folders > 0 and #clips > 0 then
+            for _, folder in ipairs(folders) do
+                for _, child in ipairs(folder:GetChildren()) do if child:IsA("Animation") then child:Destroy() end end
+                for i, clip in ipairs(clips) do
+                    local a = Instance.new("Animation")
+                    a.Name = clip.Name or ("Animation" .. i)
+                    a.AnimationId = clip.AnimationId
+                    a.Parent = folder
+                end
+                folder:SetAttribute("RobCatalogManagedAnimation", true)
+            end
+        end
+    end
+    task.wait(0.1)
+    if animate.Parent then animate.Disabled = false end
+    return true
+end
+
+local function openAnimationBundle(entry)
+    if not animPacksIsR15 then return end
+    entry.Id = tonumber(entry.Id or entry.id) or entry.Id
+    destroyAnimationModal()
+    activeAnimationBundle = entry
+    table.clear(activeAnimationItems)
+    local modal = Instance.new("Frame")
+    modal.Name = "AnimationBundleWindow"
+    modal.Size = UDim2.new(0, 620, 0, 390)
+    modal.Position = UDim2.new(0.5, -310, 0.5, -195)
+    modal.BackgroundColor3 = Color3.fromRGB(30,30,30)
+    modal.BorderSizePixel = 0
+    modal.ZIndex = 80
+    modal.Parent = gui
+    animationModal = modal
+    Instance.new("UICorner", modal).CornerRadius = UDim.new(0, 10)
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1,-50,0,36); title.Position = UDim2.new(0,12,0,4)
+    title.BackgroundTransparency = 1; title.TextXAlignment = Enum.TextXAlignment.Left
+    title.TextColor3 = Color3.new(1,1,1); title.Font = Enum.Font.GothamBold; title.TextSize = 18
+    title.Text = entry.Name or "Animation Pack"; title.ZIndex = 81; title.Parent = modal
+    local close = Instance.new("TextButton")
+    close.Size = UDim2.new(0,32,0,30); close.Position = UDim2.new(1,-38,0,6)
+    close.Text = "X"; close.Font = Enum.Font.GothamBold; close.TextSize = 16
+    close.TextColor3 = Color3.new(1,1,1); close.BackgroundColor3 = Color3.fromRGB(150,60,60); close.ZIndex = 81; close.Parent = modal
+    Instance.new("UICorner", close).CornerRadius = UDim.new(0,6)
+    close.MouseButton1Click:Connect(destroyAnimationModal)
+    local viewport = Instance.new("ViewportFrame")
+    viewport.Size = UDim2.new(0,270,0,300); viewport.Position = UDim2.new(0,12,0,44)
+    viewport.BackgroundColor3 = Color3.fromRGB(22,22,22); viewport.Ambient = Color3.fromRGB(200,200,200)
+    viewport.LightColor = Color3.new(1,1,1); viewport.ZIndex = 81; viewport.Parent = modal
+    Instance.new("UICorner", viewport).CornerRadius = UDim.new(0,8)
+    local world = Instance.new("WorldModel"); world.Parent = viewport; animationModalWorld = world
+    local camera = Instance.new("Camera"); camera.FieldOfView = 35; camera.Parent = viewport; viewport.CurrentCamera = camera
+    local char = player.Character
+    if char then
+        local wasArchivable = char.Archivable; char.Archivable = true
+        local ok, clone = pcall(function() return char:Clone() end)
+        char.Archivable = wasArchivable
+        if ok and clone then
+            for _, d in ipairs(clone:GetDescendants()) do
+                if d:IsA("LuaSourceContainer") or d:IsA("Tool") or d:IsA("Sound") then d:Destroy() end
+            end
+            local hum = clone:FindFirstChildOfClass("Humanoid")
+            local root = clone:FindFirstChild("HumanoidRootPart")
+            if hum and root then
+                local animate = clone:FindFirstChild("Animate"); if animate then animate:Destroy() end
+                for _, tr in ipairs(hum:GetPlayingAnimationTracks()) do pcall(function() tr:Stop(0) end) end
+                animationModalRig = clone; clone.Parent = world
+                clone:PivotTo(CFrame.new(0,0,0) * CFrame.Angles(0, math.pi, 0))
+                root.Anchored = true
+                pcall(function() hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None end)
+                animationModalAnimator = hum:FindFirstChildOfClass("Animator") or Instance.new("Animator", hum)
+                camera.CFrame = CFrame.lookAt(Vector3.new(0,3.2,12), Vector3.new(0,1.8,0))
+            else clone:Destroy() end
+        end
+    end
+    local slotsPanel = Instance.new("ScrollingFrame")
+    slotsPanel.Size = UDim2.new(1,-302,0,245); slotsPanel.Position = UDim2.new(0,292,0,44)
+    slotsPanel.BackgroundTransparency = 1; slotsPanel.BorderSizePixel = 0; slotsPanel.ScrollBarThickness = 5
+    slotsPanel.ScrollingDirection = Enum.ScrollingDirection.Y; slotsPanel.CanvasSize = UDim2.new(0,0,0,0)
+    slotsPanel.AutomaticCanvasSize = Enum.AutomaticSize.Y; slotsPanel.ZIndex = 81; slotsPanel.Parent = modal
+    local list = Instance.new("UIListLayout"); list.Padding = UDim.new(0,5); list.Parent = slotsPanel
+    local status = Instance.new("TextLabel")
+    status.Size = UDim2.new(1,-302,0,28); status.Position = UDim2.new(0,292,0,292)
+    status.BackgroundTransparency = 1; status.Text = "Loading animation slots..."; status.TextWrapped = true
+    status.TextColor3 = Color3.fromRGB(200,200,200); status.Font = Enum.Font.Gotham; status.TextSize = 12
+    status.ZIndex = 81; status.Parent = modal
+    local applyOne = Instance.new("TextButton")
+    applyOne.Size = UDim2.new(0,135,0,34); applyOne.Position = UDim2.new(0,292,1,-44)
+    applyOne.Text = "Apply Selected"; applyOne.Font = Enum.Font.GothamBold; applyOne.TextSize = 13
+    applyOne.TextColor3 = Color3.new(1,1,1); applyOne.BackgroundColor3 = Color3.fromRGB(0,135,210); applyOne.ZIndex = 81; applyOne.Parent = modal
+    Instance.new("UICorner", applyOne).CornerRadius = UDim.new(0,6)
+    local applyAll = Instance.new("TextButton")
+    applyAll.Size = UDim2.new(0,135,0,34); applyAll.Position = UDim2.new(0,437,1,-44)
+    applyAll.Text = "Apply All"; applyAll.Font = Enum.Font.GothamBold; applyAll.TextSize = 13
+    applyAll.TextColor3 = Color3.new(1,1,1); applyAll.BackgroundColor3 = Color3.fromRGB(0,160,100); applyAll.ZIndex = 81; applyAll.Parent = modal
+    Instance.new("UICorner", applyAll).CornerRadius = UDim.new(0,6)
+    local selectedKey
+    local slotMap = {}
+    local function previewSlot(key, item)
+        selectedKey = key; stopAnimationPreview()
+        local clips = item.ResolvedAnimations or {}
+        local clip = clips[1]
+        if not clip or not clip.AnimationId or clip.AnimationId == "" or not animationModalAnimator then
+            status.Text = "Could not resolve a playable animation for this slot."; return
+        end
+        local animation = Instance.new("Animation"); animation.AnimationId = clip.AnimationId
+        local ok, track = pcall(function() return animationModalAnimator:LoadAnimation(animation) end)
+        if ok and track then
+            animationModalTrack = track
+            track.Looped = true
+            local played, playErr = pcall(function() track:Play(0.15) end)
+            status.Text = played and ("Previewing " .. key .. " · " .. clip.AnimationId) or ("Preview failed: " .. tostring(playErr))
+        else status.Text = "Preview failed to load the resolved animation. Check that the clip is accessible." end
+    end
+    task.spawn(function()
+        local ok, details = pcall(function() return AssetService:GetBundleDetailsAsync(entry.Id) end)
+        if not modal.Parent then return end
+        if not ok or type(details) ~= "table" or type(details.Items) ~= "table" then status.Text = "Couldn't load this animation bundle."; return end
+        for _, item in ipairs(details.Items) do
+            local slot = getAnimationSlot(item)
+            if slot and item.Id then
+                local clips = resolveAnimationClips(item, slot)
+                if #clips > 0 then
+                    item.ResolvedAnimations = clips
+                    slotMap[slot.key] = item
+                end
+            end
+        end
+        for _, slot in ipairs(animationSlots) do
+            local item = slotMap[slot.key]
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(1,-8,0,30); b.BackgroundColor3 = item and Color3.fromRGB(55,55,55) or Color3.fromRGB(38,38,38)
+            b.TextColor3 = item and Color3.new(1,1,1) or Color3.fromRGB(110,110,110)
+            b.Font = Enum.Font.GothamBold; b.TextSize = 13
+            b.Text = item and (slot.label .. "  ·  " .. tostring(item.Name or item.Id)) or (slot.label .. "  ·  Not included")
+            b.TextXAlignment = Enum.TextXAlignment.Left; b.ZIndex = 82; b.Parent = slotsPanel
+            Instance.new("UICorner", b).CornerRadius = UDim.new(0,5)
+            if item then b.MouseButton1Click:Connect(function() previewSlot(slot.key, item) end) end
+        end
+        status.Text = "Choose a slot to preview it, then apply one or all animations."
+        if next(slotMap) then
+            for _, slot in ipairs(animationSlots) do if slotMap[slot.key] then previewSlot(slot.key, slotMap[slot.key]); break end end
+        end
+    end)
+    applyOne.MouseButton1Click:Connect(function()
+        if not selectedKey or not slotMap[selectedKey] then status.Text = "Select an included animation first."; return end
+        local ok, err = applyAnimationSlots({[selectedKey] = slotMap[selectedKey]})
+        if ok then AutoSaveOutfit() end
+        status.Text = ok and ("Applied " .. selectedKey .. " animation.") or tostring(err)
+    end)
+    applyAll.MouseButton1Click:Connect(function()
+        if not next(slotMap) then status.Text = "No animations are available to apply."; return end
+        local ok, err = applyAnimationSlots(slotMap)
+        if ok then AutoSaveOutfit() end
+        status.Text = ok and "Applied all animations included in this bundle." or tostring(err)
+    end)
+end
+
+local function addAnimationBundleCard(item)
+    local bundleId = tonumber(item.Id or item.id or item.BundleId or item.bundleId)
+    if not bundleId or bundleId <= 0 or animPackCardIds[bundleId] then return end
+    animPackCardIds[bundleId] = true
+    local button = Instance.new("ImageButton")
+    button.Size = UDim2.new(0,100,0,120); button.BackgroundColor3 = Color3.fromRGB(45,45,45)
+    button.Parent = scroll; Instance.new("UICorner", button).CornerRadius = UDim.new(0,8)
+    local image = Instance.new("ImageLabel")
+    image.Size = UDim2.new(1,-10,0,88); image.Position = UDim2.new(0,5,0,5)
+    image.BackgroundTransparency = 1; image.ScaleType = Enum.ScaleType.Fit
+    local thumbUrl = "rbxthumb://type=BundleThumbnail&id=" .. tostring(bundleId) .. "&w=150&h=150"
+    image.Image = thumbUrl
+    image.ImageTransparency = 0
+    image:SetAttribute("BundleId", bundleId)
+    image.Parent = button
+    local ContentProvider = game:GetService("ContentProvider")
+    task.spawn(function()
+        for attempt = 1, 4 do
+            if not image.Parent then return end
+            pcall(function() ContentProvider:PreloadAsync({image}) end)
+            if image.IsLoaded then return end
+            task.wait(attempt * 0.75)
+            if image.Parent then image.Image = thumbUrl end
+        end
+    end)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1,-4,0,24); label.Position = UDim2.new(0,2,1,-27)
+    label.BackgroundTransparency = 1; label.TextColor3 = Color3.new(1,1,1); label.Font = Enum.Font.GothamBold
+    label.TextSize = 11; label.TextWrapped = true; label.Text = tostring(item.Name or "Animation Pack"); label.Parent = button
+    button.MouseButton1Click:Connect(function() openAnimationBundle(item) end)
+end
+
+local function updateAnimPackRig(character)
+    task.spawn(function()
+        task.wait(1)
+        local hum = character and character:FindFirstChildOfClass("Humanoid")
+        animPacksIsR15 = hum ~= nil and hum.RigType == Enum.HumanoidRigType.R15
+        for _, b in ipairs(animPackButtons) do
+            if b.Parent then
+                b.Text = animPacksIsR15 and "Anim Packs" or "Anim Packs ⚠"
+                b.BackgroundColor3 = animPacksIsR15 and Color3.fromRGB(45,45,45) or Color3.fromRGB(75,55,45)
+            end
+        end
+    end)
+end
+if player.Character then updateAnimPackRig(player.Character) end
+
 loadMore = function(reset)
 	if loading then
 		return
@@ -1087,41 +1887,718 @@ loadMore = function(reset)
 
 	loading = true
 
+    if currentAssetType == "Anim Packs" and not reset then
+        if catalogPages then
+            local advanced = pcall(function() catalogPages:AdvanceToNextPageAsync() end)
+            if advanced then
+                local got, items = pcall(function() return catalogPages:GetCurrentPage() end)
+                if got and type(items) == "table" then
+                    for _, item in ipairs(items) do addAnimationBundleCard(item) end
+                end
+            end
+        end
+        scroll.CanvasSize = UDim2.new(0,0,0,layout.AbsoluteContentSize.Y)
+        loading = false
+        return
+    end
 	if reset then
-        clearItems()
+        if currentAssetType == "Anim Packs" then
+            animPackCardIds = {}
+        end
+		clearItems()
 
-    if outfitNameBox then
-        outfitNameBox:Destroy()
-        outfitNameBox = nil
-    end
-
-    searchBar.Visible = currentAssetType ~= "Outfits"
-    clearSearchBtn.Visible = currentAssetType ~= "Outfits"
-
-    if currentAssetType == "Outfits" then
-        outfitNameBox = Instance.new("TextBox")
-        outfitNameBox.Size = UDim2.new(0.55, 0, 0, 30)
-        outfitNameBox.Position = UDim2.new(0.15, 0, 0, 50)
-        outfitNameBox.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
-        outfitNameBox.TextColor3 = Color3.new(1, 1, 1)
-        outfitNameBox.PlaceholderText = "Enter outfit name..."
-        outfitNameBox.Text = ""
-        outfitNameBox.Font = Enum.Font.Gotham
-        outfitNameBox.TextSize = 14
-        outfitNameBox.ClearTextOnFocus = false
-outfitNameBox.Active = true
-outfitNameBox.Selectable = true
-outfitNameBox.ZIndex = 10
-outfitNameBox.Parent = frame
-outfitNameBox:CaptureFocus()
-
-        Instance.new("UICorner", outfitNameBox).CornerRadius =
-            UDim.new(0, 6)
-    end
-
+   local isSpecialTab = currentAssetType == "Music Player" or currentAssetType == "Accessory Studio" or currentAssetType == "Anim Packs"
+   setSpecialTabLayout(isSpecialTab)
    scroll.Visible = true
    bodyFrame.Visible = false
    partSelector.Visible = false
+
+   local searchableNow = currentAssetType == "Anim Packs" or (typeof(currentAssetType) == "EnumItem" and currentAssetType.EnumType == Enum.AvatarAssetType)
+   searchBar.Visible = searchableNow
+   clearSearchBtn.Visible = searchableNow
+   if searchableNow then
+      searchBar.PlaceholderText = currentAssetType == "Anim Packs" and "Search animation packs..." or "Search catalog items..."
+      searchBar.Position = UDim2.new(0.15, 0, 0, 50)
+      searchBar.Size = UDim2.new(0.55, 0, 0, 30)
+      clearSearchBtn.Position = UDim2.new(0.70, 2, 0, 50)
+      searchBar.ZIndex = 20
+      clearSearchBtn.ZIndex = 21
+   end
+
+   if currentAssetType == "Anim Packs" then
+      if scroll.Parent ~= frame then scroll.Parent = frame end
+      scroll.Visible = true
+      scroll.ScrollingEnabled = true
+      scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+      searchBar.Visible = true
+      clearSearchBtn.Visible = true
+      searchBar.PlaceholderText = "Search animation packs..."
+      searchBar.Position = UDim2.new(0.15, 0, 0, 50)
+      searchBar.Size = UDim2.new(0.55, 0, 0, 30)
+      clearSearchBtn.Position = UDim2.new(0.70, 2, 0, 50)
+      searchBar.ZIndex = 20
+      clearSearchBtn.ZIndex = 21
+      searchBar.TextEditable = true
+      if not animPacksIsR15 then
+         clearItems()
+         layout.Parent = nil
+         local warning = Instance.new("TextLabel")
+         warning.Size = UDim2.new(1,-24,0,90); warning.Position = UDim2.new(0,12,0,20)
+         warning.BackgroundColor3 = Color3.fromRGB(65,45,40); warning.TextColor3 = Color3.new(1,1,1)
+         warning.Font = Enum.Font.GothamBold; warning.TextSize = 18; warning.TextWrapped = true
+         warning.Text = "Animation Packs require an R15 character. Switch your avatar to R15 and respawn; this tab checks again after every respawn."
+         warning.Parent = scroll; scroll.CanvasSize = UDim2.new(0,0,0,125)
+         loading = false; return
+      end
+      layout.Parent = scroll
+      scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+      scroll.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y)
+      scroll.ScrollingEnabled = true
+      scroll.ScrollingDirection = Enum.ScrollingDirection.Y
+      layout.CellSize = UDim2.new(0,100,0,120)
+      layout.CellPadding = UDim2.new(0,5,0,5)
+      local params = CatalogSearchParams.new()
+      params.SearchKeyword = (currentQuery or ""):gsub("^%s+", ""):gsub("%s+$", "")
+      pcall(function() params.BundleTypes = {Enum.BundleType.Animations} end)
+      pcall(function() params.IncludeOffSale = catalogAdvancedFilters.includeOffSale end)
+      if catalogAdvancedFilters.creatorName ~= "" then
+          pcall(function() params.CreatorName = catalogAdvancedFilters.creatorName end)
+          pcall(function() params.CreatorType = Enum.CreatorType.User end)
+      end
+      local sortNames = {Relevance = "Relevance", BestSelling = "BestSelling", Popular = "MostPopular", ["Recently Published"] = "RecentlyCreated"}
+      local sortName = sortNames[catalogAdvancedFilters.sortType] or "Relevance"
+      pcall(function() params.SortType = Enum.CatalogSortType[sortName] end)
+      pcall(function() params.Limit = 30 end)
+      local ok, pages = pcall(function() return AvatarEditorService:SearchCatalog(params) end)
+      catalogPages = ok and pages or nil
+      if catalogPages then
+         local got, items = pcall(function() return catalogPages:GetCurrentPage() end)
+         if got and type(items) == "table" then for _, item in ipairs(items) do addAnimationBundleCard(item) end end
+      end
+      scroll.CanvasSize = UDim2.new(0,0,0,layout.AbsoluteContentSize.Y)
+      loading = false
+      if searchableTabForEmptyState() then updateSearch() end
+      return
+   end
+
+   if currentAssetType == "Music Player" then
+      layout.Parent = nil
+      scroll.Visible = true
+      bodyFrame.Visible = false
+      partSelector.Visible = false
+      local contentWidth = math.max(frame.AbsoluteSize.X - 16, 320)
+      local contentHeight = math.max(frame.AbsoluteSize.Y - 136, 180)
+      scroll.CanvasSize = UDim2.new(0, contentWidth, 0, contentHeight)
+      local SoundService = game:GetService("SoundService")
+      local musicSound = SoundService:FindFirstChild("RobCatalogRelaxingMusic")
+      if not musicSound then
+         musicSound = Instance.new("Sound")
+         musicSound.Name = "RobCatalogRelaxingMusic"
+         musicSound.Volume = 0.25
+         musicSound.Looped = false
+         musicSound.Parent = SoundService
+      end
+      local tracks = {"9047105533", "9047104336", "9047105108", "9047104571", "9047104411", "9047105584", "9047105702", "9047104752"}
+      local trackIndex = 1
+      local musicPanel = Instance.new("Frame")
+      musicPanel.Name = "MusicPlayerPanel"
+      musicPanel.Size = UDim2.new(0, contentWidth - 8, 0, contentHeight - 8)
+      musicPanel.BackgroundColor3 = Color3.fromRGB(35,35,35)
+      musicPanel.Position = UDim2.new(0, 4, 0, 4)
+      musicPanel.Parent = scroll
+      Instance.new("UICorner", musicPanel).CornerRadius = UDim.new(0,8)
+      local heading = Instance.new("TextLabel")
+      heading.Size = UDim2.new(1,-32,0,44)
+      heading.Position = UDim2.new(0,16,0.20,0)
+      heading.BackgroundTransparency = 1
+      heading.Text = "Relaxing Music Player"
+      heading.TextColor3 = Color3.new(1,1,1)
+      heading.Font = Enum.Font.GothamBold
+      heading.TextSize = 24
+      heading.Parent = musicPanel
+      local trackLabel = Instance.new("TextLabel")
+      trackLabel.Size = UDim2.new(1,-32,0,38)
+      trackLabel.Position = UDim2.new(0,16,0.40,0)
+      trackLabel.BackgroundTransparency = 1
+      trackLabel.TextColor3 = Color3.fromRGB(210,210,210)
+      trackLabel.Font = Enum.Font.Gotham
+      trackLabel.TextSize = 14
+      trackLabel.Text = "Track 1 of 3"
+      trackLabel.Parent = musicPanel
+      local function makeMusicButton(text, idx)
+         local b = Instance.new("TextButton")
+         b.Size = UDim2.new(1/3, -20, 0, 46)
+         b.Position = UDim2.new((idx-1)/3, 10, 0.64, 0)
+         b.BackgroundColor3 = Color3.fromRGB(0,145,220)
+         b.TextColor3 = Color3.new(1,1,1)
+         b.Font = Enum.Font.GothamBold
+         b.TextSize = 15
+         b.Text = text
+         b.Parent = musicPanel
+         Instance.new("UICorner",b).CornerRadius = UDim.new(0,6)
+         return b
+      end
+      local previousButton = makeMusicButton("Previous", 1)
+      local pauseButton = makeMusicButton("Pause", 2)
+      local nextButton = makeMusicButton("Next", 3)
+      local function playTrack(idx)
+         trackIndex = ((idx - 1) % #tracks) + 1
+         musicSound:Stop()
+         musicSound.SoundId = "rbxassetid://" .. tracks[trackIndex]
+         trackLabel.Text = "Track " .. trackIndex .. " of " .. #tracks .. "  •  " .. tracks[trackIndex]
+         pauseButton.Text = "Pause"
+         musicSound:Play()
+      end
+      previousButton.MouseButton1Click:Connect(function() playTrack(trackIndex - 1) end)
+      nextButton.MouseButton1Click:Connect(function() playTrack(trackIndex + 1) end)
+      pauseButton.MouseButton1Click:Connect(function()
+         if musicSound.IsPlaying then
+            musicSound:Pause(); pauseButton.Text = "Play"
+         elseif musicSound.SoundId == "" then
+            playTrack(trackIndex)
+         else
+            musicSound:Resume(); pauseButton.Text = "Pause"
+         end
+      end)
+      if musicSound.SoundId == "" then
+         trackLabel.Text = "Choose Next or Previous to start a track"
+      else
+         for i,id in ipairs(tracks) do if musicSound.SoundId == "rbxassetid://"..id then trackIndex=i end end
+         trackLabel.Text = "Track " .. trackIndex .. " of " .. #tracks .. "  •  " .. tracks[trackIndex]
+         pauseButton.Text = musicSound.IsPlaying and "Pause" or "Play"
+      end
+      loading = false
+      return
+   end
+
+   if currentAssetType == "Accessory Studio" then
+      layout.Parent = nil
+      scroll.Visible = true
+      bodyFrame.Visible = false
+      partSelector.Visible = false
+      local contentWidth = math.max(frame.AbsoluteSize.X - 16, 320)
+      scroll.CanvasSize = UDim2.new(0, contentWidth, 0, 550)
+      local character = player.Character
+      local accessories = {}
+      if character then
+         for _, child in ipairs(character:GetChildren()) do
+            if child:IsA("Accessory") then table.insert(accessories, child) end
+         end
+      end
+      local panel = Instance.new("Frame")
+      panel.Name = "AccessoryStudioPanel"
+      panel.Size = UDim2.new(0,contentWidth-8,0,540)
+      panel.Position = UDim2.new(0,4,0,4)
+      panel.BackgroundColor3 = Color3.fromRGB(35,35,35)
+      panel.Parent = scroll
+      Instance.new("UICorner",panel).CornerRadius = UDim.new(0,8)
+      local heading = Instance.new("TextLabel")
+      heading.Size = UDim2.new(1,-16,0,30)
+      heading.Position = UDim2.new(0,8,0,5)
+      heading.BackgroundTransparency = 1
+      heading.Text = "Accessory Studio"
+      heading.TextColor3 = Color3.new(1,1,1)
+      heading.Font = Enum.Font.GothamBold
+      heading.TextSize = 19
+      heading.Parent = panel
+      local viewport = Instance.new("ViewportFrame")
+      viewport.Size = UDim2.new(0.43,-16,0,280)
+      viewport.Position = UDim2.new(0,8,0,42)
+      viewport.BackgroundColor3 = Color3.fromRGB(25,25,25)
+      viewport.Ambient = Color3.fromRGB(200,200,200)
+      viewport.LightColor = Color3.new(1,1,1)
+      viewport.Parent = panel
+      Instance.new("UICorner",viewport).CornerRadius = UDim.new(0,6)
+      local world = Instance.new("WorldModel")
+      world.Parent = viewport
+      local camera = Instance.new("Camera")
+      camera.FieldOfView = 35
+      camera.Parent = viewport
+      viewport.CurrentCamera = camera
+      local selectedAccessory, previewClone, previewCharacter, originalState, activeProfile
+      local previewWeld, previewWeldBase, previewBodyPart, previewBodyAttachment, previewAccessoryAttachment
+      local sliderControls = {}
+      local colorValues, colorEnabled, scaleValue = {255,255,255}, false, 1
+      local positionValues, rotationValues = {0,0,0}, {0,0,0}
+      local function captureAccessoryState(acc)
+         local state = {parts={}, meshes={}, weld=nil}
+         local handle = acc:FindFirstChild("Handle")
+         if handle then
+            for _,d in ipairs(acc:GetDescendants()) do
+               if d:IsA("BasePart") then state.parts[d] = {Size=d.Size, Color=d.Color, Transparency=d.Transparency} end
+               if d:IsA("SpecialMesh") then state.meshes[d] = {Scale=d.Scale, VertexColor=d.VertexColor} end
+               if (d:IsA("Weld") or d:IsA("Motor6D")) and (d.Part1 == handle or d.Part0 == handle) then
+                  state.weld = {instance=d, C0=d.C0, C1=d.C1}; break
+               end
+            end
+         end
+         return state
+      end
+      local function offsetCFrame()
+         return CFrame.new(positionValues[1]/100, positionValues[2]/100, positionValues[3]/100)
+            * CFrame.Angles(math.rad(rotationValues[1]), math.rad(rotationValues[2]), math.rad(rotationValues[3]))
+      end
+      local function setAccessoryAppearance(acc, baseState, factor, color)
+         if not acc or not baseState then return end
+         local basePartsByName, baseMeshesByName = {}, {}
+         for part,values in pairs(baseState.parts) do basePartsByName[part.Name] = values end
+         for mesh,values in pairs(baseState.meshes) do baseMeshesByName[mesh.Name] = values end
+         for _,d in ipairs(acc:GetDescendants()) do
+            if d:IsA("BasePart") then
+               local values = basePartsByName[d.Name]
+               if values then d.Size = values.Size * factor; d.Color = color or values.Color end
+            elseif d:IsA("SpecialMesh") then
+               local values = baseMeshesByName[d.Name]
+               if values then d.Scale = values.Scale * factor; d.VertexColor = color and Vector3.new(color.R,color.G,color.B) or values.VertexColor end
+            end
+         end
+      end
+      local function applyAccessoryChanges()
+         if not selectedAccessory or not selectedAccessory.Parent or not originalState then return end
+         local color = colorEnabled and Color3.fromRGB(colorValues[1], colorValues[2], colorValues[3]) or nil
+         setAccessoryAppearance(selectedAccessory, originalState, scaleValue, color)
+         local weldState = originalState.weld
+         if weldState and weldState.instance and weldState.instance.Parent then
+            weldState.instance.C0 = weldState.C0 * offsetCFrame()
+         end
+         local liveHandle = selectedAccessory:FindFirstChild("Handle")
+         if liveHandle and liveHandle:IsA("BasePart") then
+            local accAttachment = liveHandle:FindFirstChildWhichIsA("Attachment", true)
+            local bodyPart, bodyAttachment
+            if accAttachment then
+               local liveCharacter = player.Character
+               if liveCharacter then
+                  for _,desc in ipairs(liveCharacter:GetDescendants()) do
+                     if desc:IsA("Attachment") and desc.Name == accAttachment.Name and desc.Parent and desc.Parent:IsA("BasePart") and desc.Parent ~= liveHandle then
+                        bodyPart, bodyAttachment = desc.Parent, desc
+                        break
+                     end
+                  end
+               end
+            end
+            if bodyPart and bodyAttachment then
+               local liveWeld = liveHandle:FindFirstChild("AccessoryStudioOffsetWeld")
+               if not liveWeld then
+                  for _,joint in ipairs(liveHandle:GetChildren()) do
+                     if joint:IsA("WeldConstraint") then joint:Destroy() end
+                  end
+                  liveWeld = Instance.new("Weld")
+                  liveWeld.Name = "AccessoryStudioOffsetWeld"
+                  liveWeld.Part0 = bodyPart
+                  liveWeld.Part1 = liveHandle
+                  liveWeld.C1 = accAttachment.CFrame
+                  liveWeld.Parent = liveHandle
+               end
+               liveWeld.Part0 = bodyPart
+               liveWeld.Part1 = liveHandle
+               liveWeld.C0 = bodyAttachment.CFrame * offsetCFrame()
+               liveWeld.C1 = accAttachment.CFrame
+            else
+               local baseCF = liveHandle:GetAttribute("AccessoryStudioBaseCFrame")
+               if not baseCF then
+               end
+            end
+         end
+         if previewClone and previewClone.Parent then
+            local basePartsByName, baseMeshesByName = {}, {}
+            for part,values in pairs(originalState.parts) do basePartsByName[part.Name] = values end
+            for mesh,values in pairs(originalState.meshes) do baseMeshesByName[mesh.Name] = values end
+            for _,d in ipairs(previewClone:GetDescendants()) do
+               if d:IsA("BasePart") then
+                  local values = basePartsByName[d.Name]
+                  if values then d.Size = values.Size * scaleValue; d.Color = color or values.Color end
+               elseif d:IsA("SpecialMesh") then
+                  local values = baseMeshesByName[d.Name]
+                  if values then d.Scale = values.Scale * scaleValue; d.VertexColor = color and Vector3.new(color.R,color.G,color.B) or values.VertexColor end
+               end
+            end
+            if previewWeld and previewWeld.Parent and previewWeldBase then
+               previewWeld.C0 = previewWeldBase.C0 * offsetCFrame()
+               local handle = previewClone:FindFirstChild("Handle")
+               if handle and previewBodyPart then
+                  local baseAttachmentFrame = previewBodyAttachment and previewBodyAttachment.CFrame or previewWeldBase.C0
+                  local accessoryAttachmentFrame = previewAccessoryAttachment and previewAccessoryAttachment.CFrame or previewWeldBase.C1
+                  handle.CFrame = previewBodyPart.CFrame * baseAttachmentFrame * offsetCFrame() * accessoryAttachmentFrame:Inverse()
+               end
+            end
+         end
+         if activeProfile then
+            activeProfile.scale = scaleValue
+            activeProfile.position = {positionValues[1],positionValues[2],positionValues[3]}
+            activeProfile.rotation = {rotationValues[1],rotationValues[2],rotationValues[3]}
+            activeProfile.colorEnabled = colorEnabled
+            activeProfile.color = {colorValues[1],colorValues[2],colorValues[3]}
+            pcall(function()
+                selectedAccessory:SetAttribute("AccessoryStudioModified", true)
+                selectedAccessory:SetAttribute("AccessoryStudioScale", scaleValue)
+                selectedAccessory:SetAttribute("AccessoryStudioPosition", HttpService:JSONEncode(positionValues))
+                selectedAccessory:SetAttribute("AccessoryStudioRotation", HttpService:JSONEncode(rotationValues))
+                selectedAccessory:SetAttribute("AccessoryStudioColorEnabled", colorEnabled)
+                selectedAccessory:SetAttribute("AccessoryStudioColor", HttpService:JSONEncode(colorValues))
+            end)
+            if AutoSaveOutfit then AutoSaveOutfit() end
+         end
+      end
+      local function updatePreview()
+         for _,child in ipairs(world:GetChildren()) do child:Destroy() end
+         previewClone, previewCharacter, previewWeld, previewWeldBase, previewBodyPart, previewBodyAttachment, previewAccessoryAttachment = nil, nil, nil, nil, nil, nil, nil
+         local liveCharacter = player.Character
+         if not liveCharacter then return end
+         local archivableFlags = {}
+         archivableFlags[liveCharacter] = liveCharacter.Archivable
+         liveCharacter.Archivable = true
+         for _,obj in ipairs(liveCharacter:GetDescendants()) do
+            archivableFlags[obj] = obj.Archivable
+            obj.Archivable = true
+         end
+         local ok, rig = pcall(function() return liveCharacter:Clone() end)
+         for obj,wasArchivable in pairs(archivableFlags) do
+            if obj and obj.Parent then obj.Archivable = wasArchivable end
+         end
+         if not ok or not rig then return end
+         for _,d in ipairs(rig:GetDescendants()) do
+            if d:IsA("Script") or d:IsA("LocalScript") or d:IsA("Animator") then
+               d:Destroy()
+            elseif d:IsA("BasePart") then
+               d.Anchored = true
+               d.CanCollide = false
+            end
+         end
+         for _,child in ipairs(rig:GetChildren()) do
+            if child:IsA("Accessory") then child:Destroy() end
+         end
+         rig.Name = "StudioCharacterPreview"
+         rig.Parent = world
+         previewCharacter = rig
+         rig:PivotTo(CFrame.new(0,0,0))
+         if selectedAccessory then
+            local accClone
+            local catalogId = selectedAccessory:GetAttribute("CatalogId")
+            if catalogId then
+               local okAsset, loadedAsset = pcall(function()
+                  return game:GetObjects("rbxassetid://" .. tostring(catalogId))[1]
+               end)
+               if okAsset and loadedAsset then
+                  if loadedAsset:IsA("Accessory") then
+                     accClone = loadedAsset
+                  else
+                     local nestedAccessory = loadedAsset:FindFirstChildWhichIsA("Accessory", true)
+                     if nestedAccessory then
+                        nestedAccessory.Parent = nil
+                        loadedAsset:Destroy()
+                        accClone = nestedAccessory
+                     else
+                        loadedAsset:Destroy()
+                     end
+                  end
+               end
+            end
+            if not accClone then
+               local accessoryArchivable = {}
+               accessoryArchivable[selectedAccessory] = selectedAccessory.Archivable
+               selectedAccessory.Archivable = true
+               for _,obj in ipairs(selectedAccessory:GetDescendants()) do
+                  accessoryArchivable[obj] = obj.Archivable
+                  obj.Archivable = true
+               end
+               local okAcc, clonedAccessory = pcall(function() return selectedAccessory:Clone() end)
+               for obj,wasArchivable in pairs(accessoryArchivable) do
+                  if obj and obj.Parent then obj.Archivable = wasArchivable end
+               end
+               if okAcc then accClone = clonedAccessory end
+            end
+            if accClone then
+               local attached, bodyPart, bodyAttachment, accessoryAttachment, createdWeld = attachAccessoryToPreview(rig, accClone)
+               if attached then
+                  previewClone = accClone
+                  previewBodyPart, previewBodyAttachment, previewAccessoryAttachment = bodyPart, bodyAttachment, accessoryAttachment
+                  previewWeld = createdWeld
+                  if createdWeld then previewWeldBase = {C0=createdWeld.C0, C1=createdWeld.C1} end
+                  for _,d in ipairs(accClone:GetDescendants()) do
+                     if d:IsA("BasePart") then d.Anchored = true; d.CanCollide = false end
+                  end
+                  local previewColor = colorEnabled and Color3.fromRGB(colorValues[1],colorValues[2],colorValues[3]) or nil
+                  setAccessoryAppearance(accClone, originalState, scaleValue, previewColor)
+               end
+            end
+         end
+         local boxCFrame, boxSize = rig:GetBoundingBox()
+         local focus = boxCFrame.Position + Vector3.new(0, boxSize.Y * 0.08, 0)
+         local distance = math.max(boxSize.Magnitude * 1.35, 4)
+         camera.CFrame = CFrame.lookAt(focus + Vector3.new(0, boxSize.Y * 0.05, -distance), focus)
+         applyAccessoryChanges()
+      end
+      local choose = Instance.new("TextButton")
+      choose.Size = UDim2.new(0.43,-16,0,36)
+      choose.Position = UDim2.new(0,8,0,330)
+      choose.BackgroundColor3 = Color3.fromRGB(50,50,50)
+      choose.TextColor3 = Color3.new(1,1,1)
+      choose.Font = Enum.Font.Gotham
+      choose.TextSize = 13
+      choose.Text = #accessories > 0 and accessories[1].Name or "Equip an accessory first"
+      choose.Parent = panel
+      Instance.new("UICorner",choose).CornerRadius = UDim.new(0,6)
+      local dropdown = Instance.new("ScrollingFrame")
+      dropdown.Size = UDim2.new(0.43,-16,0,100)
+      dropdown.Position = UDim2.new(0,8,0,368)
+      dropdown.BackgroundColor3 = Color3.fromRGB(42,42,42)
+      dropdown.Visible = false
+      dropdown.ZIndex = 5
+      dropdown.ScrollBarThickness = 4
+      dropdown.AutomaticCanvasSize = Enum.AutomaticSize.Y
+      dropdown.CanvasSize = UDim2.new()
+      dropdown.Parent = panel
+      Instance.new("UICorner",dropdown).CornerRadius = UDim.new(0,6)
+      local dropLayout = Instance.new("UIListLayout")
+      dropLayout.Padding = UDim.new(0,2)
+      dropLayout.Parent = dropdown
+      local function selectAccessory(acc)
+         selectedAccessory = acc
+         activeProfile = accessoryStudioProfiles[acc]
+         if not activeProfile then
+            local baseState = captureAccessoryState(acc)
+            local baseColor = Color3.new(1,1,1)
+            local baseHandle = acc:FindFirstChild("Handle")
+            if baseHandle and baseState.parts[baseHandle] then baseColor = baseState.parts[baseHandle].Color end
+            local savedScale = tonumber(acc:GetAttribute("AccessoryStudioScale")) or 1
+            local savedPosition, savedRotation, savedColor = {0,0,0}, {0,0,0}, {255,255,255}
+            pcall(function() savedPosition = HttpService:JSONDecode(acc:GetAttribute("AccessoryStudioPosition") or "[0,0,0]") end)
+            pcall(function() savedRotation = HttpService:JSONDecode(acc:GetAttribute("AccessoryStudioRotation") or "[0,0,0]") end)
+            pcall(function() savedColor = HttpService:JSONDecode(acc:GetAttribute("AccessoryStudioColor") or "[255,255,255]") end)
+            if acc:GetAttribute("AccessoryStudioModified") then
+               savedScale = math.clamp(savedScale, 0.05, 10)
+               if savedScale ~= 0 then
+                  for _, values in pairs(baseState.parts) do values.Size = values.Size / savedScale end
+                  for _, values in pairs(baseState.meshes) do values.Scale = values.Scale / savedScale end
+               end
+               activeProfile = {baseState=baseState, scale=savedScale,
+                  position={tonumber(savedPosition[1]) or 0,tonumber(savedPosition[2]) or 0,tonumber(savedPosition[3]) or 0},
+                  rotation={tonumber(savedRotation[1]) or 0,tonumber(savedRotation[2]) or 0,tonumber(savedRotation[3]) or 0},
+                  colorEnabled=acc:GetAttribute("AccessoryStudioColorEnabled") == true,
+                  color={tonumber(savedColor[1]) or 255,tonumber(savedColor[2]) or 255,tonumber(savedColor[3]) or 255}}
+            else
+               activeProfile = {baseState=baseState, scale=1, position={0,0,0}, rotation={0,0,0}, colorEnabled=false,
+                  color={math.floor(baseColor.R*255+0.5),math.floor(baseColor.G*255+0.5),math.floor(baseColor.B*255+0.5)}}
+            end
+            accessoryStudioProfiles[acc] = activeProfile
+         end
+         originalState = activeProfile.baseState
+         scaleValue = activeProfile.scale or 1
+         positionValues = {activeProfile.position[1],activeProfile.position[2],activeProfile.position[3]}
+         rotationValues = {activeProfile.rotation[1],activeProfile.rotation[2],activeProfile.rotation[3]}
+         colorEnabled = activeProfile.colorEnabled or false
+         if activeProfile.color then
+            colorValues = {activeProfile.color[1],activeProfile.color[2],activeProfile.color[3]}
+         else
+            local baseHandle = acc:FindFirstChild("Handle")
+            local baseColor = baseHandle and originalState.parts[baseHandle] and originalState.parts[baseHandle].Color or Color3.new(1,1,1)
+            colorValues = {math.floor(baseColor.R*255+0.5),math.floor(baseColor.G*255+0.5),math.floor(baseColor.B*255+0.5)}
+         end
+         choose.Text = acc and (acc:GetAttribute("DisplayName") or acc.Name) or "Choose accessory"
+         dropdown.Visible = false
+         updatePreview()
+         for _,sliderData in ipairs(sliderControls) do sliderData.refresh() end
+      end
+      local function rebuildAccessoryOptions()
+         for _,child in ipairs(dropdown:GetChildren()) do
+            if child:IsA("GuiObject") then child:Destroy() end
+         end
+         table.clear(accessories)
+         local liveCharacter = player.Character
+         if liveCharacter then
+            for _,child in ipairs(liveCharacter:GetChildren()) do
+               if child:IsA("Accessory") then table.insert(accessories, child) end
+            end
+         end
+         choose.Text = #accessories > 0 and (selectedAccessory and selectedAccessory.Parent and (selectedAccessory:GetAttribute("DisplayName") or selectedAccessory.Name) or (accessories[1]:GetAttribute("DisplayName") or accessories[1].Name)) or "Equip an accessory first"
+         for _,acc in ipairs(accessories) do
+            local displayName = acc:GetAttribute("DisplayName")
+            local catalogId = acc:GetAttribute("CatalogId")
+            if (not displayName or displayName == "") and catalogId then
+               local okInfo, info = pcall(function()
+                  return game:GetService("MarketplaceService"):GetProductInfo(tonumber(catalogId))
+               end)
+               if okInfo and info and info.Name then
+                  displayName = info.Name
+                  pcall(function() acc:SetAttribute("DisplayName", displayName) end)
+               end
+            end
+            local opt = Instance.new("TextButton")
+            opt.Size = UDim2.new(1,-4,0,28)
+            opt.BackgroundColor3 = Color3.fromRGB(55,55,55)
+            opt.TextColor3 = Color3.new(1,1,1)
+            opt.Font = Enum.Font.Gotham
+            opt.TextSize = 12
+            opt.Text = displayName or acc.Name
+            opt.ZIndex = 6
+            opt.Parent = dropdown
+            opt.MouseButton1Click:Connect(function() selectAccessory(acc) end)
+         end
+      end
+      rebuildAccessoryOptions()
+      dropdown.ZIndex = 5
+      choose.MouseButton1Click:Connect(function()
+         rebuildAccessoryOptions()
+         dropdown.Visible = not dropdown.Visible
+      end)
+      local function addSlider(labelText, y, minVal, maxVal, initial, onChanged, suffix)
+         local label = Instance.new("TextLabel")
+         label.Size = UDim2.new(0.34,-10,0,18)
+         label.Position = UDim2.new(0.46,8,0,y)
+         label.BackgroundTransparency = 1
+         label.TextColor3 = Color3.new(1,1,1)
+         label.Font = Enum.Font.Gotham
+         label.TextSize = 12
+         label.TextXAlignment = Enum.TextXAlignment.Left
+         label.Text = labelText .. ": " .. tostring(initial) .. (suffix or "")
+         label.Parent = panel
+         local slider = Instance.new("TextButton")
+         slider.Size = UDim2.new(0.34,-10,0,12)
+         slider.Position = UDim2.new(0.46,8,0,y+18)
+         slider.BackgroundColor3 = Color3.fromRGB(60,60,60)
+         slider.Text = ""
+         slider.Parent = panel
+         Instance.new("UICorner",slider).CornerRadius = UDim.new(1,0)
+         local valueBox = Instance.new("TextBox")
+         valueBox.Size = UDim2.new(0.16,-6,0,24)
+         valueBox.Position = UDim2.new(0.81,0,0,y+12)
+         valueBox.BackgroundColor3 = Color3.fromRGB(48,48,48)
+         valueBox.BorderSizePixel = 0
+         valueBox.TextColor3 = Color3.new(1,1,1)
+         valueBox.Font = Enum.Font.Gotham
+         valueBox.TextSize = 12
+         valueBox.ClearTextOnFocus = false
+         valueBox.Text = tostring(initial)
+         valueBox.Parent = panel
+         Instance.new("UICorner",valueBox).CornerRadius = UDim.new(0,4)
+         local fill = Instance.new("Frame")
+         fill.BackgroundColor3 = Color3.fromRGB(0,170,255)
+         fill.Size = UDim2.new((initial-minVal)/(maxVal-minVal),0,1,0)
+         fill.Parent = slider
+         Instance.new("UICorner",fill).CornerRadius = UDim.new(1,0)
+         local function setValue(value, fireCallback)
+            value = math.clamp(value,minVal,maxVal)
+            if suffix == "x" then value = math.floor(value*10+0.5)/10 else value = math.floor(value+0.5) end
+            label.Text = labelText
+            valueBox.Text = tostring(value)
+            fill.Size = UDim2.new((value-minVal)/(maxVal-minVal),0,1,0)
+            if fireCallback then onChanged(value) end
+         end
+         valueBox.FocusLost:Connect(function()
+            local parsed = tonumber(valueBox.Text)
+            if parsed then
+               setValue(parsed,true)
+            else
+               local current = tonumber((valueBox.Text or ""):match("^%s*([%+%-]?[%d%.]+)"))
+               if current then setValue(current,true) else
+                  local value = initial
+                  if labelText == "Size" then value=scaleValue
+                  elseif labelText == "Position X" then value=positionValues[1]
+                  elseif labelText == "Position Y" then value=positionValues[2]
+                  elseif labelText == "Position Z" then value=positionValues[3]
+                  elseif labelText == "Rotation X" then value=rotationValues[1]
+                  elseif labelText == "Rotation Y" then value=rotationValues[2]
+                  elseif labelText == "Rotation Z" then value=rotationValues[3]
+                  elseif labelText == "Red" then value=colorValues[1]
+                  elseif labelText == "Green" then value=colorValues[2]
+                  elseif labelText == "Blue" then value=colorValues[3] end
+                  setValue(value,false)
+               end
+            end
+         end)
+         local dragging = false
+         local function fromX(x)
+            local alpha = math.clamp((x-slider.AbsolutePosition.X)/math.max(slider.AbsoluteSize.X,1),0,1)
+            setValue(minVal+(maxVal-minVal)*alpha,true)
+         end
+         slider.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then dragging=true; fromX(input.Position.X) end
+         end)
+         UserInputService.InputChanged:Connect(function(input)
+            if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then fromX(input.Position.X) end
+         end)
+         UserInputService.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then dragging=false end
+         end)
+         table.insert(sliderControls,{refresh=function()
+            local value = initial
+            if labelText == "Size" then value=scaleValue
+            elseif labelText == "Position X" then value=positionValues[1]
+            elseif labelText == "Position Y" then value=positionValues[2]
+            elseif labelText == "Position Z" then value=positionValues[3]
+            elseif labelText == "Rotation X" then value=rotationValues[1]
+            elseif labelText == "Rotation Y" then value=rotationValues[2]
+            elseif labelText == "Rotation Z" then value=rotationValues[3]
+            elseif labelText == "Red" then value=colorValues[1]
+            elseif labelText == "Green" then value=colorValues[2]
+            elseif labelText == "Blue" then value=colorValues[3] end
+            setValue(value,false)
+         end})
+      end
+      addSlider("Size", 42, 0.5, 2, 1, function(v) scaleValue=v; applyAccessoryChanges() end, "x")
+      addSlider("Position X", 84, -180, 180, 0, function(v) positionValues[1]=v; applyAccessoryChanges() end, "")
+      addSlider("Position Y", 126, -180, 180, 0, function(v) positionValues[2]=v; applyAccessoryChanges() end, "")
+      addSlider("Position Z", 168, -180, 180, 0, function(v) positionValues[3]=v; applyAccessoryChanges() end, "")
+      addSlider("Rotation X", 210, -180, 180, 0, function(v) rotationValues[1]=v; applyAccessoryChanges() end, "")
+      addSlider("Rotation Y", 252, -180, 180, 0, function(v) rotationValues[2]=v; applyAccessoryChanges() end, "")
+      addSlider("Rotation Z", 294, -180, 180, 0, function(v) rotationValues[3]=v; applyAccessoryChanges() end, "")
+      addSlider("Red", 336, 0, 255, 255, function(v) colorValues[1]=v; colorEnabled=true; applyAccessoryChanges() end, "")
+      addSlider("Green", 378, 0, 255, 255, function(v) colorValues[2]=v; colorEnabled=true; applyAccessoryChanges() end, "")
+      addSlider("Blue", 420, 0, 255, 255, function(v) colorValues[3]=v; colorEnabled=true; applyAccessoryChanges() end, "")
+      local reset = Instance.new("TextButton")
+      reset.Size=UDim2.new(0.53,-16,0,32)
+      reset.Position=UDim2.new(0.46,8,0,462)
+      reset.BackgroundColor3=Color3.fromRGB(170,75,65)
+      reset.Text="Reset Settings"
+      reset.TextColor3=Color3.new(1,1,1)
+      reset.Font=Enum.Font.GothamBold
+      reset.TextSize=12
+      reset.Parent=panel
+      Instance.new("UICorner",reset).CornerRadius=UDim.new(0,6)
+      reset.MouseButton1Click:Connect(function()
+         if not selectedAccessory or not originalState then return end
+         scaleValue = 1
+         positionValues = {0,0,0}
+         rotationValues = {0,0,0}
+         local baseHandle = selectedAccessory:FindFirstChild("Handle")
+         local baseColor = baseHandle and originalState.parts[baseHandle] and originalState.parts[baseHandle].Color or Color3.new(1,1,1)
+         colorValues = {math.floor(baseColor.R*255+0.5),math.floor(baseColor.G*255+0.5),math.floor(baseColor.B*255+0.5)}
+         colorEnabled = false
+         for part,values in pairs(originalState.parts) do
+            if part and part.Parent then part.Size=values.Size; part.Color=values.Color; part.Transparency=values.Transparency end
+         end
+         for mesh,values in pairs(originalState.meshes) do
+            if mesh and mesh.Parent then mesh.Scale=values.Scale; mesh.VertexColor=values.VertexColor end
+         end
+         if originalState.weld and originalState.weld.instance and originalState.weld.instance.Parent then
+            originalState.weld.instance.C0=originalState.weld.C0
+            originalState.weld.instance.C1=originalState.weld.C1
+         end
+         if activeProfile then
+            activeProfile.scale=1; activeProfile.position={0,0,0}; activeProfile.rotation={0,0,0}
+            activeProfile.colorEnabled=false; activeProfile.color={colorValues[1],colorValues[2],colorValues[3]}
+         end
+         updatePreview()
+         for _,sliderData in ipairs(sliderControls) do sliderData.refresh() end
+      end)
+      local refresh = Instance.new("TextButton")
+      refresh.Size=UDim2.new(0.53,-16,0,30)
+      refresh.Position=UDim2.new(0.46,8,0,498)
+      refresh.BackgroundColor3=Color3.fromRGB(0,145,220)
+      refresh.Text="Refresh Accessories"
+      refresh.TextColor3=Color3.new(1,1,1)
+      refresh.Font=Enum.Font.GothamBold
+      refresh.TextSize=12
+      refresh.Parent=panel
+      Instance.new("UICorner",refresh).CornerRadius=UDim.new(0,6)
+      refresh.MouseButton1Click:Connect(function() loadMore(true) end)
+      if #accessories > 0 then selectAccessory(accessories[1]) end
+      loading = false
+      return
+   end
+
+   layout.Parent = scroll
+   scroll.Visible = true
 
    if currentAssetType == "Body" then
 
@@ -1199,6 +2676,37 @@ local function Apply(color)
 
 	end
 
+	local bodyColorsInstance = character:FindFirstChildOfClass("BodyColors")
+	if bodyColorsInstance then
+		local bodyColorProperties = {
+			["Head"] = "HeadColor3", ["Torso"] = "TorsoColor3",
+			["Left Arm"] = "LeftArmColor3", ["Right Arm"] = "RightArmColor3",
+			["Left Leg"] = "LeftLegColor3", ["Right Leg"] = "RightLegColor3",
+		}
+		local r15Properties = {
+			["Head"] = "HeadColor3", ["UpperTorso"] = "TorsoColor3", ["LowerTorso"] = "TorsoColor3",
+			["LeftUpperArm"] = "LeftArmColor3", ["LeftLowerArm"] = "LeftArmColor3", ["LeftHand"] = "LeftArmColor3",
+			["RightUpperArm"] = "RightArmColor3", ["RightLowerArm"] = "RightArmColor3", ["RightHand"] = "RightArmColor3",
+			["LeftUpperLeg"] = "LeftLegColor3", ["LeftLowerLeg"] = "LeftLegColor3", ["LeftFoot"] = "LeftLegColor3",
+			["RightUpperLeg"] = "RightLegColor3", ["RightLowerLeg"] = "RightLegColor3", ["RightFoot"] = "RightLegColor3",
+		}
+		if SelectedBodyPart == "All" then
+			for _, prop in pairs(bodyColorProperties) do bodyColorsInstance[prop] = color end
+		else
+			local legacyProp = bodyColorProperties[SelectedBodyPart]
+			if legacyProp then bodyColorsInstance[legacyProp] = color end
+			for partName, prop in pairs(r15Properties) do
+				if (SelectedBodyPart == "Torso" and (partName == "UpperTorso" or partName == "LowerTorso"))
+					or (SelectedBodyPart == "Left Arm" and partName:find("Left"))
+					or (SelectedBodyPart == "Right Arm" and partName:find("Right") and (partName:find("Arm") or partName == "RightHand"))
+					or (SelectedBodyPart == "Left Leg" and partName:find("Left") and (partName:find("Leg") or partName == "LeftFoot"))
+					or (SelectedBodyPart == "Right Leg" and partName:find("Right") and (partName:find("Leg") or partName == "RightFoot"))
+					or (SelectedBodyPart == "Head" and partName == "Head") then
+					bodyColorsInstance[prop] = color
+				end
+			end
+		end
+	end
 	AutoSaveOutfit()
 end
 
@@ -1223,11 +2731,7 @@ return
 
 rgbBox.FocusLost:Connect(function(enter)
 
-	if not enter then
-		return
-	end
-
-	local r,g,b = rgbBox.Text:match("(%d+),(%d+),(%d+)")
+	local r,g,b = rgbBox.Text:match("^%s*(%d+)%s*[,;]%s*(%d+)%s*[,;]%s*(%d+)%s*$")
 
 	if r then
 		r = math.clamp(tonumber(r),0,255)
@@ -1258,6 +2762,21 @@ rgbBox.FocusLost:Connect(function(enter)
 
 		end
 
+        local bc = character:FindFirstChildOfClass("BodyColors")
+        if bc then
+            local props = {
+                Head = "HeadColor3", Torso = "TorsoColor3",
+                ["Left Arm"] = "LeftArmColor3", ["Right Arm"] = "RightArmColor3",
+                ["Left Leg"] = "LeftLegColor3", ["Right Leg"] = "RightLegColor3",
+            }
+            if SelectedBodyPart == "All" then
+                for _, prop in pairs(props) do bc[prop] = color end
+            elseif props[SelectedBodyPart] then
+                bc[props[SelectedBodyPart]] = color
+            end
+        end
+        AutoSaveOutfit()
+
 	end
 
 end)
@@ -1270,7 +2789,7 @@ if currentAssetType == "Outfits" then
 	scroll.CanvasPosition = Vector2.zero
 
 	local save = Instance.new("TextButton")
-	save.Size = UDim2.new(0,220,0,40)
+	save.Size = UDim2.new(1,-12,0,40)
 	save.BackgroundColor3 = Color3.fromRGB(45,45,45)
 	save.Text = "Save Current Outfit"
 	save.TextColor3 = Color3.new(1,1,1)
@@ -1282,99 +2801,102 @@ if currentAssetType == "Outfits" then
 
 	save.MouseButton1Click:Connect(function()
 
-    local outfitName = ""
+		table.insert(SavedOutfits,{
+			Name = "Outfit "..#SavedOutfits + 1,
+			Data = GetCurrentOutfit()
+		})
 
-    if outfitNameBox and outfitNameBox.Parent then
-        outfitName = outfitNameBox.Text
-    end
+		SaveOutfits()
+		loadMore(true)
 
-    outfitName = outfitName:match("^%s*(.-)%s*$")
-
-    if outfitName == "" then
-        outfitName = "Outfit " .. (#SavedOutfits + 1)
-    end
-
-    local outfitData = GetCurrentOutfit()
-
-    if not outfitData then
-        warn("Could not save outfit data.")
-        return
-    end
-
-    table.insert(SavedOutfits, {
-        Name = outfitName,
-        Data = outfitData
-    })
-
-    local success, err = pcall(function()
-        SaveOutfits()
-    end)
-
-    if not success then
-        warn("Could not save outfits: " .. tostring(err))
-    end
-
-    loadMore(true)
-
-end)
+	end)
 
 	for i,outfit in ipairs(SavedOutfits) do
 
 		local row = Instance.new("Frame")
-		row.Size = UDim2.new(0,260,0,40)
+		row.Size = UDim2.new(1,-12,0,96)
 		row.BackgroundColor3 = Color3.fromRGB(45,45,45)
 		row.Parent = scroll
 		Instance.new("UICorner",row)
 
-		local nameBox = Instance.new("TextBox")
-nameBox.Size = UDim2.new(1,-10,0,28)
-nameBox.Position = UDim2.new(0,5,0,3)
-nameBox.BackgroundColor3 = Color3.fromRGB(55,55,55)
-nameBox.Text = outfit.Name or "Outfit"
-nameBox.PlaceholderText = "Enter outfit name"
-nameBox.TextColor3 = Color3.new(1,1,1)
-nameBox.Font = Enum.Font.GothamBold
-nameBox.TextSize = 15
-nameBox.ClearTextOnFocus = false
-nameBox.TextXAlignment = Enum.TextXAlignment.Center
-nameBox.Parent = row
+		local label = Instance.new("TextLabel")
+		label.Size = UDim2.new(.6,0,1,0)
+		label.BackgroundTransparency = 1
+		label.Text = outfit.Name
+		label.TextColor3 = Color3.new(1,1,1)
+		label.Font = Enum.Font.GothamBold
+		label.TextSize = 15
+		label.Parent = row
 
-Instance.new("UICorner",nameBox)
+row.Size = UDim2.new(1,-12,0,96)
 
-nameBox.FocusLost:Connect(function()
-    local newName = nameBox.Text:match("^%s*(.-)%s*$")
+label.Size = UDim2.new(1,-10,0,24)
+label.Position = UDim2.new(0,5,0,2)
+label.TextXAlignment = Enum.TextXAlignment.Center
+label.TextWrapped = true
+label.TextScaled = true
 
-    if newName == "" then
-        nameBox.Text = outfit.Name
-        return
-    end
-
-    outfit.Name = newName
-    nameBox.Text = newName
-
-    SaveOutfits()
-end)
 local equip = Instance.new("TextButton")
-equip.Size = UDim2.new(.45,-5,0,30)
-equip.Position = UDim2.new(0.03,0,0,38)
+equip.Size = UDim2.new(.30,-5,0,28)
+equip.Position = UDim2.new(0.02,0,0,32)
 equip.BackgroundColor3 = Color3.fromRGB(0,170,255)
 equip.Text = "Equip"
 equip.TextColor3 = Color3.new(1,1,1)
 equip.Font = Enum.Font.GothamBold
 equip.TextSize = 14
+equip.TextScaled = true
+equip.TextWrapped = true
 equip.Parent = row
 Instance.new("UICorner",equip)
 
 local delete = Instance.new("TextButton")
-delete.Size = UDim2.new(.45,-5,0,30)
-delete.Position = UDim2.new(.52,0,0,38)
+delete.Size = UDim2.new(.30,-5,0,28)
+delete.Position = UDim2.new(.68,0,0,32)
 delete.BackgroundColor3 = Color3.fromRGB(170,60,60)
 delete.Text = "Delete"
 delete.TextColor3 = Color3.new(1,1,1)
 delete.Font = Enum.Font.GothamBold
 delete.TextSize = 14
+delete.TextScaled = true
+delete.TextWrapped = true
 delete.Parent = row
 Instance.new("UICorner",delete)
+
+        local renameBox = Instance.new("TextBox")
+        renameBox.Size = UDim2.new(.60,-5,0,28)
+        renameBox.Position = UDim2.new(.02,0,0,64)
+        renameBox.BackgroundColor3 = Color3.fromRGB(55,55,55)
+        renameBox.TextColor3 = Color3.new(1,1,1)
+        renameBox.PlaceholderText = "New outfit name"
+        renameBox.Text = outfit.Name
+        renameBox.ClearTextOnFocus = false
+        renameBox.Font = Enum.Font.Gotham
+        renameBox.TextSize = 12
+        renameBox.TextScaled = true
+        renameBox.TextWrapped = true
+        renameBox.Parent = row
+        Instance.new("UICorner",renameBox)
+        local renameButton = Instance.new("TextButton")
+        renameButton.Size = UDim2.new(.34,-5,0,28)
+        renameButton.Position = UDim2.new(.64,0,0,64)
+        renameButton.BackgroundColor3 = Color3.fromRGB(70,100,150)
+        renameButton.TextColor3 = Color3.new(1,1,1)
+        renameButton.Text = "Rename"
+        renameButton.Font = Enum.Font.GothamBold
+        renameButton.TextSize = 12
+        renameButton.TextScaled = true
+        renameButton.TextWrapped = true
+        renameButton.Parent = row
+        Instance.new("UICorner",renameButton)
+        renameButton.MouseButton1Click:Connect(function()
+            local newName = renameBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
+            if newName ~= "" then
+                outfit.Name = newName
+                SaveOutfits()
+                label.Text = newName
+                renameBox.Text = newName
+            end
+        end)
 
 		equip.MouseButton1Click:Connect(function()
 			LoadSavedOutfit(outfit.Data)
@@ -1392,13 +2914,26 @@ Instance.new("UICorner",delete)
 	return
 end
 
+if currentAssetType == "Anim Packs" then
+    if not animPacksIsR15 then loading = false; return end
+    if catalogPages then pcall(function() catalogPages:AdvanceToNextPageAsync() end) end
+    if catalogPages then
+        local ok, items = pcall(function() return catalogPages:GetCurrentPage() end)
+        if ok and type(items) == "table" then for _, item in ipairs(items) do addAnimationBundleCard(item) end end
+        scroll.CanvasSize = UDim2.new(0,0,0,layout.AbsoluteContentSize.Y)
+    end
+    loading = false
+    return
+end
+
 if currentAssetType == "Settings" then
 
 	clearItems()
+    layout.Parent = nil
 	scroll.CanvasPosition = Vector2.zero
 
 	local container = Instance.new("Frame")
-	container.Size = UDim2.new(1,0,0,50)
+	container.Size = UDim2.new(1,0,0,55)
 	container.BackgroundTransparency = 1
 	container.Parent = scroll
 
@@ -1435,11 +2970,31 @@ if currentAssetType == "Settings" then
 
 	end)
 
-	scroll.CanvasSize = UDim2.new(0,0,0,60)
+	scroll.CanvasSize = UDim2.new(0,0,0,55)
 
 	loading = false
 	return
 end
+
+  if currentAssetType == "Favorites" then
+    layout.Parent = scroll
+    layout.CellSize = UDim2.new(0,100,0,120)
+    layout.CellPadding = UDim2.new(0,5,0,5)
+    local keys = {}
+    for key in pairs(Favorites) do table.insert(keys, key) end
+    table.sort(keys, function(a,b) return tostring(a) < tostring(b) end)
+    for _, key in ipairs(keys) do
+        local saved = Favorites[key]
+        if type(saved) == "table" and tonumber(saved.Id or key) then
+            local typeName = tostring(saved.AssetType or "")
+            local enumType = Enum.AvatarAssetType[typeName]
+            addItem({Id = tonumber(saved.Id or key), Name = tostring(saved.Name or ("Asset " .. key)), AssetType = enumType or Enum.AvatarAssetType.Hat})
+        end
+    end
+    scroll.CanvasSize = UDim2.new(0,0,0,layout.AbsoluteContentSize.Y)
+    loading = false
+    return
+  end
 
   if currentAssetType == "Bundles" then
 
@@ -1482,7 +3037,18 @@ end
 		local params = CatalogSearchParams.new()
 		params.SearchKeyword = currentQuery
 		params.AssetTypes = {currentAssetType}
-
+        local sortNames = {Relevance = "Relevance", BestSelling = "BestSelling", Popular = "MostPopular", ["Recently Published"] = "RecentlyCreated"}
+        local sortName = sortNames[catalogAdvancedFilters.sortType] or "Relevance"
+        pcall(function() params.SortType = Enum.CatalogSortType[sortName] end)
+		local typeText = tostring(currentAssetType)
+		local filterable = typeText:find("Accessory") or typeText:find("Hat") or typeText:find("Hair") or typeText:find("Shirt") or typeText:find("Pants") or typeText:find("TShirt") or typeText:find("Jacket") or typeText:find("Sweater") or typeText:find("Shorts") or typeText:find("Dress") or typeText:find("Shoe")
+		if filterable then
+			pcall(function() params.IncludeOffSale = catalogAdvancedFilters.includeOffSale end)
+			if catalogAdvancedFilters.creatorName ~= "" then
+				pcall(function() params.CreatorName = catalogAdvancedFilters.creatorName end)
+				pcall(function() params.CreatorType = Enum.CreatorType.User end)
+			end
+		end
 		catalogPages = AvatarEditorService:SearchCatalog(params)
 	else
 		if catalogPages then
@@ -1508,28 +3074,33 @@ end
 	loading = false
 end
 
+local startupSoundService = game:GetService("SoundService")
+local startupMusic = startupSoundService:FindFirstChild("RobCatalogRelaxingMusic")
+if not startupMusic then
+	startupMusic = Instance.new("Sound")
+	startupMusic.Name = "RobCatalogRelaxingMusic"
+	startupMusic.Volume = 0.25
+	startupMusic.Parent = startupSoundService
+end
+local startupTracks = {"9047105533", "9047104336", "9047105108", "9047104571", "9047104411", "9047105584", "9047105702", "9047104752"}
+startupMusic.SoundId = "rbxassetid://" .. startupTracks[math.random(1, #startupTracks)]
+startupMusic.Looped = true
+pcall(function() startupMusic:Play() end)
+
 currentQuery = ""
 loadMore(true)
 updateWearing()
 AutoSaveOutfit()
 
-addCategoryButton("Shirts",Enum.AvatarAssetType.Shirt)
-addCategoryButton("Pants",Enum.AvatarAssetType.Pants)
-addCategoryButton("T-Shirts",Enum.AvatarAssetType.TShirt)
-addCategoryButton("Hair",Enum.AvatarAssetType.HairAccessory)
-addCategoryButton("Face",Enum.AvatarAssetType.FaceAccessory)
-addCategoryButton("Neck",Enum.AvatarAssetType.NeckAccessory)
-addCategoryButton("Shoulder",Enum.AvatarAssetType.ShoulderAccessory)
-addCategoryButton("Front",Enum.AvatarAssetType.FrontAccessory)
-addCategoryButton("Back",Enum.AvatarAssetType.BackAccessory)
-addCategoryButton("Waist",Enum.AvatarAssetType.WaistAccessory)
-addCategoryButton("Hat",Enum.AvatarAssetType.Hat)
-addCategoryButton("Bundles","Bundles")
-addCategoryButton("Body","Body")
-addCategoryButton("Outfits","Outfits")
-addCategoryButton("Settings","Settings")
+buildMainCategories()
 
 scroll:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+	if currentAssetType == "Music Player" or currentAssetType == "Accessory Studio" then
+		return
+	end
+	if currentAssetType ~= "Anim Packs" and (typeof(currentAssetType) ~= "EnumItem" or currentAssetType.EnumType ~= Enum.AvatarAssetType) then
+		return
+	end
 	if loading then
 		return
 	end
@@ -1553,6 +3124,11 @@ searchBar:GetPropertyChangedSignal("Text"):Connect(function()
 	end
 
 	currentQuery = searchBar.Text
+	if currentAssetType == "Anim Packs" then
+		searchBar.Visible = true
+		clearSearchBtn.Visible = true
+		searchBar.PlaceholderText = "Search animation packs..."
+	end
 	loadMore(true)
 
 end)
@@ -1560,6 +3136,152 @@ end)
 clearSearchBtn.MouseButton1Click:Connect(function()
 	searchBar.Text = ""
 end)
+
+local filterButton = Instance.new("ImageButton")
+filterButton.Name = "CatalogAdvancedFilterButton"
+filterButton.Size = UDim2.new(0,28,0,28)
+filterButton.Position = UDim2.new(1,-36,0,51)
+filterButton.BackgroundColor3 = Color3.fromRGB(45,45,45)
+filterButton.Image = "rbxassetid://7964618035"
+filterButton.ScaleType = Enum.ScaleType.Fit
+filterButton.Visible = false
+filterButton.Parent = frame
+Instance.new("UICorner",filterButton).CornerRadius = UDim.new(0,6)
+local filterWindow = Instance.new("Frame")
+filterWindow.Name = "CatalogAdvancedFilterWindow"
+filterWindow.Size = UDim2.new(0,260,0,202)
+filterWindow.Position = UDim2.new(0.5,-130,0.5,-78)
+filterWindow.BackgroundColor3 = Color3.fromRGB(32,32,32)
+filterWindow.Visible = false
+filterWindow.ZIndex = 30
+filterWindow.Parent = frame
+Instance.new("UICorner",filterWindow).CornerRadius = UDim.new(0,8)
+local filterTitle = Instance.new("TextLabel")
+filterTitle.Size = UDim2.new(1,-36,0,28)
+filterTitle.Position = UDim2.new(0,8,0,4)
+filterTitle.BackgroundTransparency = 1
+filterTitle.Text = "Catalog Filters"
+filterTitle.TextColor3 = Color3.new(1,1,1)
+filterTitle.Font = Enum.Font.GothamBold
+filterTitle.TextSize = 14
+filterTitle.TextXAlignment = Enum.TextXAlignment.Left
+filterTitle.ZIndex = 31
+filterTitle.Parent = filterWindow
+local filterClose = Instance.new("TextButton")
+filterClose.Size = UDim2.new(0,24,0,24)
+filterClose.Position = UDim2.new(1,-28,0,4)
+filterClose.Text = "×"
+filterClose.TextColor3 = Color3.new(1,1,1)
+filterClose.BackgroundColor3 = Color3.fromRGB(65,65,65)
+filterClose.ZIndex = 31
+filterClose.Parent = filterWindow
+local offSaleToggle = Instance.new("TextButton")
+offSaleToggle.Size = UDim2.new(1,-16,0,28)
+offSaleToggle.Position = UDim2.new(0,8,0,36)
+offSaleToggle.BackgroundColor3 = Color3.fromRGB(48,48,48)
+offSaleToggle.TextColor3 = Color3.new(1,1,1)
+offSaleToggle.Font = Enum.Font.Gotham
+offSaleToggle.TextSize = 12
+offSaleToggle.ZIndex = 31
+offSaleToggle.Parent = filterWindow
+local creatorBox = Instance.new("TextBox")
+creatorBox.Size = UDim2.new(1,-16,0,28)
+creatorBox.Position = UDim2.new(0,8,0,68)
+creatorBox.BackgroundColor3 = Color3.fromRGB(48,48,48)
+creatorBox.TextColor3 = Color3.new(1,1,1)
+creatorBox.PlaceholderText = "Creator name (e.g. Roblox)"
+creatorBox.Text = catalogAdvancedFilters.creatorName
+creatorBox.Font = Enum.Font.Gotham
+creatorBox.TextSize = 12
+creatorBox.ClearTextOnFocus = false
+creatorBox.ZIndex = 31
+creatorBox.Parent = filterWindow
+local sortButton = Instance.new("TextButton")
+sortButton.Name = "CatalogSortTypeButton"
+sortButton.Size = UDim2.new(1,-16,0,28)
+sortButton.Position = UDim2.new(0,8,0,100)
+sortButton.BackgroundColor3 = Color3.fromRGB(48,48,48)
+sortButton.TextColor3 = Color3.new(1,1,1)
+sortButton.Font = Enum.Font.Gotham
+sortButton.TextSize = 12
+sortButton.ZIndex = 31
+sortButton.Parent = filterWindow
+local sortOptions = {"Relevance", "BestSelling", "Popular", "Recently Published"}
+local function updateSortButton()
+    sortButton.Text = "Sort: " .. tostring(catalogAdvancedFilters.sortType or "Relevance")
+end
+updateSortButton()
+sortButton.MouseButton1Click:Connect(function()
+    local current = table.find(sortOptions, catalogAdvancedFilters.sortType) or 1
+    catalogAdvancedFilters.sortType = sortOptions[(current % #sortOptions) + 1]
+    updateSortButton()
+end)
+local applyFilterButton = Instance.new("TextButton")
+applyFilterButton.Size = UDim2.new(1,-16,0,28)
+applyFilterButton.Position = UDim2.new(0,8,0,146)
+applyFilterButton.BackgroundColor3 = Color3.fromRGB(65,95,150)
+applyFilterButton.TextColor3 = Color3.new(1,1,1)
+applyFilterButton.Text = "Apply"
+applyFilterButton.Font = Enum.Font.GothamBold
+applyFilterButton.TextSize = 12
+applyFilterButton.ZIndex = 31
+applyFilterButton.Parent = filterWindow
+local function refreshFilterVisibility()
+ local typeText = tostring(currentAssetType)
+ local filterable = typeText:find("Accessory") or typeText:find("Hat") or typeText:find("Hair") or typeText:find("Shirt") or typeText:find("Pants") or typeText:find("TShirt") or typeText:find("Jacket") or typeText:find("Sweater") or typeText:find("Shorts") or typeText:find("Dress") or typeText:find("Shoe")
+ filterButton.Visible = filterable ~= nil or currentAssetType == "Anim Packs"
+ if not filterButton.Visible then filterWindow.Visible = false end
+ offSaleToggle.Text = "Include Offsale: " .. (catalogAdvancedFilters.includeOffSale and "ON" or "OFF")
+end
+filterButton.MouseButton1Click:Connect(function()
+ refreshFilterVisibility()
+ filterWindow.Visible = not filterWindow.Visible
+ if filterWindow.Visible and currentAssetType == "Anim Packs" and creatorBox.Text == "" then
+  creatorBox.PlaceholderText = "Creator (type Roblox for Roblox packs)"
+ else
+  creatorBox.PlaceholderText = "Creator name (e.g. Roblox)"
+ end
+end)
+filterClose.MouseButton1Click:Connect(function() filterWindow.Visible = false end)
+offSaleToggle.MouseButton1Click:Connect(function()
+ catalogAdvancedFilters.includeOffSale = not catalogAdvancedFilters.includeOffSale
+ refreshFilterVisibility()
+end)
+applyFilterButton.MouseButton1Click:Connect(function()
+ catalogAdvancedFilters.creatorName = creatorBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
+ filterWindow.Visible = false
+ loadMore(true)
+end)
+task.spawn(function()
+ while frame.Parent do
+  refreshFilterVisibility()
+  task.wait(0.25)
+ end
+end)
+
+local uiSoundService = game:GetService("SoundService")
+local hoverUiSound = uiSoundService:FindFirstChild("RobCatalogHoverSound") or Instance.new("Sound")
+hoverUiSound.Name = "RobCatalogHoverSound"
+hoverUiSound.SoundId = "rbxassetid://876939830"
+hoverUiSound.Volume = 0.35
+hoverUiSound.Parent = uiSoundService
+local clickUiSound = uiSoundService:FindFirstChild("RobCatalogClickSound") or Instance.new("Sound")
+clickUiSound.Name = "RobCatalogClickSound"
+clickUiSound.SoundId = "rbxassetid://6042054037"
+clickUiSound.Volume = 0.45
+clickUiSound.Parent = uiSoundService
+local function bindButtonSounds(obj)
+    if not obj:IsA("GuiButton") or obj:GetAttribute("RobCatalogSoundsBound") then return end
+    obj:SetAttribute("RobCatalogSoundsBound", true)
+    obj.MouseEnter:Connect(function()
+        pcall(function() hoverUiSound:Stop(); hoverUiSound:Play() end)
+    end)
+    obj.Activated:Connect(function()
+        pcall(function() clickUiSound:Stop(); clickUiSound:Play() end)
+    end)
+end
+for _, obj in ipairs(gui:GetDescendants()) do bindButtonSounds(obj) end
+gui.DescendantAdded:Connect(bindButtonSounds)
 
 local dragging, dragInput, dragStart, startPos
 local function update(input)
@@ -1596,13 +3318,11 @@ local minimizeBtn = Instance.new("TextButton")
 minimizeBtn.Size = UDim2.new(0,50,0,50)
 minimizeBtn.Position = UDim2.new(0,20,1,-70)
 minimizeBtn.BackgroundColor3 = Color3.fromRGB(30,30,30)
-minimizeBtn.Text = "PG🪐"
+minimizeBtn.Text = "Rob"
 minimizeBtn.TextColor3 = Color3.fromRGB(255,255,255)
 minimizeBtn.Font = Enum.Font.GothamBold
 minimizeBtn.TextSize = 18
 minimizeBtn.Visible = false
-minimizeBtn.Active = true
-minimizeBtn.Draggable = true
 minimizeBtn.Parent = gui
 
 local minimizeCorner = Instance.new("UICorner", minimizeBtn)
@@ -1649,10 +3369,15 @@ minimizeBtn.InputBegan:Connect(function(input)
 end)
 
 player.CharacterAdded:Connect(function(character)
+    if sharedEnv.__RobCatalogRunGeneration ~= thisRunGeneration then return end
+    restoreGeneration += 1
+    isRestoringOutfit = false
 
+	updateAnimPackRig(character)
 	character:WaitForChild("Humanoid")
 
-	task.wait(0.2)
+	task.wait(0.7)
+    if player.Character ~= character then return end
 
 	local head = character:FindFirstChild("Head")
 
@@ -1664,7 +3389,6 @@ originalHeadMesh = mesh and mesh:Clone() or nil
 	updateWearing()
 
 if Settings.AutoLoad and AutoSavedOutfit then
-	task.wait(1)
 	LoadSavedOutfit(AutoSavedOutfit)
 end
 
